@@ -1,6 +1,8 @@
 #include<iostream>
 
 int main() {
+// Use nothrow when the program can keep going after failure
+// Use exception when you need to terminate the program
 
 	int* const ptr = new(std::nothrow) int[500'000'000];	// Allocate 500 million integers
 	if (ptr == nullptr)
