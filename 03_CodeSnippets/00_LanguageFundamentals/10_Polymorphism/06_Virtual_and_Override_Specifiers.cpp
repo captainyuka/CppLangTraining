@@ -1,5 +1,9 @@
 #include<iostream>
 
+// Use of keyword virtual means that
+// the compiler ensures that any overriding variant
+// of the requested base class method is invoked.
+
 class Animal {
 	int x_, y_;
 public:
@@ -13,7 +17,7 @@ public:
 
 class Rabbit : public Animal{
 public:
-	void run() override {				// overrid keyword not compulsory but should be used
+	void run() override {				// override keyword not compulsory but should be used
 		std::cout << "Rabbit is running";
 	}
 };

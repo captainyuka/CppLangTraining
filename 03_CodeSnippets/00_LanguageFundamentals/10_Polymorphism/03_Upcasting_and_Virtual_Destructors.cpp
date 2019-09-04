@@ -17,6 +17,11 @@ class Architect : public Person {
 
 class Animal {
 	public:
+		/*
+		 * Using virtual Destructors Ensures That 
+		 * Destructors in Derived Classes Are Invoked 
+		 * When Deleting a Pointer of Type Base* 
+	   	 */
 		virtual ~Animal() {
 			std::cout << "Animal Destructor...\n";
 		}
