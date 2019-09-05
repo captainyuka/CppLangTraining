@@ -69,7 +69,7 @@ public:
 
 	MyString& operator= (const MyString& copy_src) {					// Copy Assignment Operator
 		
-		std::cout << "Move assignment operator copies: " << copy_src.GetBuffer() << '\n';
+		std::cout << "Copy assignment operator copies: " << copy_src.GetBuffer() << '\n';
 		if ( (copy_src.GetBuffer() != nullptr) && (this != &copy_src) ) {
 			auto len = strlen(copy_src.GetBuffer()) + 1;
 			char* temp_buffer = new char[ len ];
