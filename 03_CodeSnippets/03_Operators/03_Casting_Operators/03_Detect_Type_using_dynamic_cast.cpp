@@ -2,6 +2,10 @@
 
 // The result of a dynamic_cast always needs to be checked for validity.
 
+/* this mechanism of identifying the type of the object at 
+ * runtime is called runtime type identification (RTTI)
+ */
+
 class Fish {
 public:
 	virtual void Swim(){
