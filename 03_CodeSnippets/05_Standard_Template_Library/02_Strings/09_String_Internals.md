@@ -3,7 +3,9 @@
 The `std::string` class is actually a specialization of the STL template class `std::basic_string <T>` .
 
 The template declaration of container class basic_string is as follows:
-`template<class _Elem, class _Traits, class _Ax> class basic_string`
+````c++
+template<class _Elem, class _Traits, class _Ax> class basic_string
+````
 
 * In this template definition, the parameter of utmost importance is the first one: _Elem .
 	* This is the type collected by the basic_string object. 
