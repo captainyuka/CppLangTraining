@@ -33,5 +33,7 @@ int main() {
 	// Start a new vector with initial capacity of 5
 	arr = std::vector<int>(5);		
 	printState(arr);
-
+	
+	arr.reserve(25);		// increase capacity
+	printState(arr);
 }
