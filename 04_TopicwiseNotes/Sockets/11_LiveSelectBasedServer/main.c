@@ -4,6 +4,9 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
+#define TRUE 1
+#define FALSE 0
+
 // The following macros planned to be taken as param to main
 // That is why we allocate the resources dynamically rather than staticly
 #define MAX_NUMBER_OF_CLIENTS 30
@@ -96,8 +99,42 @@ int main(int argc, char** argv){
     
     // Listen to incoming connections
     listen(master, 10);
+  
+    ///////////////////////////////////////////
+    // Accept the client requests and 
+    // handle them asynchronously using polling
+    // with the help of select()
+    ///////////////////////////////////////////
+    
+    fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
 
+    addrlen = sizeof(struct sockaddr_in);
+    while(TRUE){
+        // Clear the socket fd set
+        FD_ZERO(&readfds);
+
+        // Add the master socket to the fd set
+        FD_SET(master, &readfds);
         
-
+        // Add child sockets to the fd set
+        for(i=0; i < MAX_NUMBER_OF_CLIENTS; ++i){
+            s = client_socket[i];,
+            if(s > 0)
+                FD_SET(s, &readfds, &readfdss);
+        }
+            
+    }
+   
+    ///////////////////////////////////////////
+    // Cleanup the resources and exit 
+    ///////////////////////////////////////////
+    
+    while(client_socket != NULL)               // Traverse the array
+        closesocket(*client_socket++);         // Close the current client socket
+    free(client_sockets);                      // Free the dynamically allocated client_sockets array
+    
+   
+    closesocket(master);
+    WSACleanup();
     return 0;
 }
