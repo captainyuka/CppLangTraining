@@ -25,6 +25,64 @@ void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_so
        fprintf(stderr, "recv failed with error code: %d", error_code);
 }
 
+void PrepareSocket(){}
+
+void StartTheServer(){}
+
+void SetupTheFdSet(){} 
+
+void HandleServerMaster(){}
+
+// Otherwise the ther exists some IO operation on one of the client sockets
+// which means one of the clients has sent a request
+void HandleServerClient(SOCKET* client_socket, struct addr_in address, char* buffer){
+    SOCKET s;
+    int valread;
+    int addrlen = sizeof(address);
+    
+
+    for(i, = 0; i < MAX_NUMBER_OF_CLIENTS; ++i)
+        if(FD_ISSET((s=client_socket[i]), &readfds)){
+            // Get details of the client
+            getpeername(s, (struct sockaddr*)&address, (int*)&addrlen);
+
+            // Check if it was for closing
+            // and also read the incoming msg
+            // do not forget, recv doeos not place a null at the end of str
+            valread = recv(s, buffer, MAX_RECV_BUFFER_SIZE);
+
+            if(valread == SOCKET_ERROR)
+                DisconnectTheClient(address, s, client_socket);
+            else if(valread == 0){
+                // Somebody disconnected, print the client's details
+                printf("Host disconnected:::IP = %s, PORT = %d\n", 
+                        inet_ntoa(address.sin_addr), 
+                        ntohs(address.sin_port) );
+                // Close the socket and mark as 0 in the client list for reuse
+                closesocket(s);
+                client_socket[i] = 0;
+            }else{
+                // Echo back the msg that came in  
+                buffer[valread] = '\0';
+                printf("%s:%d - %s\n", inet_ntoa(address.sin_addr),
+                                       ntohs(address.sin_port),
+                                       buffer);
+                send(s, buffer, valread, 0)
+            }
+        }
+}
+
+void CleanResources(SOCKET master, SOCKET* client_socket){
+
+    while(client_socket != NULL)               // Traverse the array
+        closesocket(*client_socket++);         // Close the current client socket
+    free(client_socket);                      // Free the dynamically allocated client_sockets array
+    
+   
+    closesocket(master);
+    WSACleanup(); 
+}
+
 /*
  * Throw Error with given msg and also clean the WSA resources before leaving.
  * WSA Error Code is also appeneded at the end of the msg.
@@ -169,37 +227,9 @@ int main(int argc, char** argv){
         }
         // Otherwise the ther exists some IO operation on one of the client sockets
         // which means one of the clients has sent a request
-        else{
-            for(i, = 0; i < MAX_NUMBER_OF_CLIENTS; ++i)
-                if(FD_ISSET((s=client_socket[i]), &readfds)){
-                    // Get details of the client
-                    getpeername(s, (struct sockaddr*)&address, (int*)&addrlen);
-
-                    // Check if it was for closing
-                    // and also read the incoming msg
-                    // do not forget, recv doeos not place a null at the end of str
-                    valread = recv(s, buffer, MAX_RECV_BUFFER_SIZE);
-
-                    if(valread == SOCKET_ERROR)
-                        DisconnectTheClient(address, s, client_socket);
-                    else if(valread == 0){
-                        // Somebody disconnected, print the client's details
-                        printf("Host disconnected:::IP = %s, PORT = %d\n", 
-                                inet_ntoa(address.sin_addr), 
-                                ntohs(address.sin_port) );
-                        // Close the socket and mark as 0 in the client list for reuse
-                        closesocket(s);
-                        client_socket[i] = 0;
-                    }else{
-                        // Echo back the msg that came in  
-                        buffer[valread] = '\0';
-                        printf("%s:%d - %s\n", inet_ntoa(address.sin_addr),
-                                               ntohs(address.sin_port),
-                                               buffer);
-                        send(s, buffer, valread, 0)
-                    }
-                }
-        }
+        else
+            HandleServerClient(client_socket, address, buffer);
+               }
 
             
     }
@@ -208,12 +238,7 @@ int main(int argc, char** argv){
     // Cleanup the resources and exit 
     ///////////////////////////////////////////
     
-    while(client_socket != NULL)               // Traverse the array
-        closesocket(*client_socket++);         // Close the current client socket
-    free(client_sockets);                      // Free the dynamically allocated client_sockets array
-    
-   
-    closesocket(master);
-    WSACleanup();
+    CleanResources(master, client_socket);
+
     return 0;
 }
