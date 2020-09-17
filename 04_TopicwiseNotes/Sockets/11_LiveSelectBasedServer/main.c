@@ -83,7 +83,7 @@ void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket){
 
 void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* msg){
     SOCKET new_socket;
-    int addrlen = sizeof(address);
+    int addrlen = sizeof(struct sockaddr_in);
 
     if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
         WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
@@ -199,32 +199,25 @@ int main(int argc, char** argv){
     ///////////////////////////////////////////
 
     WSADATA wsa;                                // Windows Socket A. Data
-    SOCKET master, new_socket, *client_socket, s;
-    struct sockaddr_in server, address;
-    int activity, addrlen, i, valread;
+    SOCKET master;
+    SOCKET new_socket
+    SOCKET* client_socket
+    SOCKET s;
+    struct sockaddr_in server;
+    struct sockaddr_in address;
+    int activity;
+    int i;
+    int valread;
     char* msg = "EACHO Daemon v1.0 \r\n";
-    fd_set readfds;                             // Set of file descriptors
     char* buffer;
+    fd_set readfds;                             // Set of file descriptors
      
      
     ///////////////////////////////////////////
     // Initializations
     ///////////////////////////////////////////
     
-    init(&wsa, client_socket,MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
-
-    client_socket = (SOCKET*)malloc(sizeof(SOCKET) * MAX_NUMBER_OF_CLIENTS);
-    buffer = (char*)malloc((MAX_RECV_BUFFER_SIZE+1) * sizeof(char));      // Extra +1 for null termination
-
-    // init all sockets as invalid, later we will put valid ones
-    for(i = 0; i < MAX_NUMBER_OF_CLIENTS; ++i)
-        client_socket[i] = 0;
-    
-    // Init the WSA
-    if(WSAStartup(MAKEWORD(2, 2), &wsa) != 0){
-        fprintf(stderr, "Failed to startup the WSA:: WSA Error %d\n", WSAGetLastError());
-        return EXIT_FAILURE;
-    }
+    init(&wsa, client_socket, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
     
     // Sets up the server and returns the server master
     master = SetupTheServer(8888, &server, client_socket);  
@@ -244,10 +237,9 @@ int main(int argc, char** argv){
     
     fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
 
-    addrlen = sizeof(struct sockaddr_in);
     while(TRUE){ 
         // Setup the File Descriptor Set for select function()
-        SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
+        SetupTheFdSet(master, &readfds_ptr, client_socket);
         
         // Wait for an activity on any of the sockets
         // timeout is NULL, which means we wait indefinitely
