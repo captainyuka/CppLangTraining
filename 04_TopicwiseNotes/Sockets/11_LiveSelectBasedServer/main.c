@@ -1,8 +1,8 @@
-#include <stdio.h>
+#include <stdio.h>   
 #include <stdlib.h>
 #include <winsock2.h>
 
-#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "ws2_32.lib")              // Required for windows socket 2 usage(win32 sockets)
 
 #define TRUE 1
 #define FALSE 0
@@ -12,13 +12,15 @@
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
 
-void Init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size);
+// Functions related to the Server
+WSADATA* Init(SOCKET* client_socket);
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
-void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* msg);
+void HandleServerMaster(SOCKET master, const char* msg);
 void HandleServerClient(SOCKET* client_socket, struct sockaddr_in address, char* buffer);
 
+// Helper functions for the server
 void CleanResources(SOCKET master, SOCKET* client_socket);
 void WsaThrowError(const char* msg);
 void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server){ 
@@ -29,7 +31,7 @@ int main(int argc, char** argv){
     // Declarations
     ///////////////////////////////////////////
 
-    WSADATA wsa;                                // Windows Socket A. Data, Required to be initialized to use Windows Sockets
+    WSADATA* wsa;                                // Windows Socket A. Data, Required to be initialized to use Windows Sockets
     SOCKET master;                              // Server master's SOCKET
     SOCKET* client_socket                       // List of client SOCKETs that has connected to the server master
     struct sockaddr_in server;                  // Contains details of the server socket, like IPV4, its port etc.
@@ -37,14 +39,19 @@ int main(int argc, char** argv){
     char* msg = "EACHO Daemon v1.0 \r\n";       // First msg to send to the client when it first get connected to the master
     char* buffer;                               // Server receive buffer, has a max length that has been taken as parameter from cmd
     fd_set readfds;                             // Set of file descriptors
-     
+    
+    // TODO: Take the following variables as argument to main
+    int max_number_of_clients = MAX_NUMBER_OF_CLIENTS;
+    int max_recv_buffer_size = MAX_RECV_BUFFER_SIZE
      
     ///////////////////////////////////////////
     // Init variables and Setup the Server
     ///////////////////////////////////////////
     
     // Initialize server basics, prepares for setup
-    Init(&wsa, client_socket, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
+    client_socket = (SOCKET*)malloc(sizeof(SOCKET) * max_number_of_clients);
+    buffer = (char*)malloc((max_recv_buffer_size+1) * sizeof(char));      // Extra +1 for null termination
+    wsa = Init(client_socket);
     
     // Sets up the server and returns the server master
     master = SetupTheServer(8888, &server, client_socket);  
@@ -84,7 +91,7 @@ int main(int argc, char** argv){
         if(FD_ISSET(master, &readfds))
             // If master has an activity
             // It means there is an incoming connection request
-             HandleServerMaster(master, address, msg);
+             HandleServerMaster(master, msg);
         else
             // Otherwise the ther exists some IO operation on one of the client sockets
             // which means one of the clients has sent a request
@@ -96,10 +103,15 @@ int main(int argc, char** argv){
     return 0;
 }
 
-void Init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size){
+/**
+ * Initizalizes the server fundamental variables and returns pointer to the WSADATA(Windows Socket A. DATA) handle.
+ *
+ * @param client_socket is a list of client sockets that has connected to the ser
+ * @return wsa_ptr is a pointer to the WSADATA structure which is required to be initialized before using winsock2
+ */
+WSADATA* Init(SOCKET* client_socket){
+    WSADATA* wsa_ptr;
     int i;
-    client_socket = (SOCKET*)malloc(sizeof(SOCKET) * max_number_of_clients);
-    buffer = (char*)malloc((max_recv_buffer_size+1) * sizeof(char));      // Extra +1 for null termination
 
     // init all sockets as invalid, later we will put valid ones
     for(i = 0; i <max_number_of_clients; ++i)
@@ -110,10 +122,19 @@ void Init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, in
         fprintf(stderr, "Failed to startup the WSA:: WSA Error %d\n", WSAGetLastError());
         exit(EXIT_FAILURE);
     }
-    
-    return &wsa;
+   
+    return wsa_ptr
 } 
 
+/**
+ * Sets up the server socket return the socket.
+ * 
+ * @param port is the port of the server socket
+ * @param server is the details of the server socket
+ * @param client_socket is the list of client sockets
+ *        client_socket var is only used to deallocate resources in case of error
+ * @return return the server socket
+ */
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket){  
     // Create socket
     if( (master=socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET )
@@ -127,6 +148,15 @@ SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socke
     return master;
 }
 
+/**
+ * Run the server on the specified master socket using given server details. 
+ *
+ * @param master is the server socket
+ * @param max_wait_queue_size is the maximum number of clients that can wait 
+ *        in the wait queue to be served by the server master when the master is busy.
+ * @param client_socket is the list of client sockets
+ *        client_socket var is only used to deallocate resources in case of error
+ */
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket){
     // Bind server to the specified port
     if( bind(master, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
@@ -136,6 +166,17 @@ void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in s
     listen(master, max_wait_queue_size); 
 }
 
+/**
+ * Prepares list of server socket file descriptors to be traced by the select().
+ * Select function checks every one of the sockets inside of this list and returns
+ * any change as notification to us. That is why here we include server master and
+ * clients of the server to the list of file descriptors.
+ *
+ * @param master is the server socket
+ * @param readfds_ptr is a pointer to the read file descriptor set
+ *        readfds listens for any change to be read from the set of the sockets.
+ * @param client_socket is the list of client sockets
+ */
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket){ 
     SOCKET s;
     int i;
@@ -152,8 +193,17 @@ void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket){
             FD_SET(s, readfds);
 } 
 
-void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* msg){
+
+/**
+ * Handles new connection requests to the server.
+ *
+ * @param master is the server socket
+ * @param msg is the hello msg to be sent to the new connection.
+ *
+ */
+void HandleServerMaster(SOCKET master, const char* msg){
     SOCKET new_socket;
+    struct sockaddr_in address;
     int addrlen = sizeof(struct sockaddr_in);
 
     if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
@@ -179,6 +229,13 @@ void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* ms
         } 
 }
 
+/**
+ * Handles proper or unexpected disconnection requests.
+ *
+ * @param address is the client address data.
+ * @param s is the socket of the client
+ * @param client_socket is the list of client sockets of the server
+ */
 void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket){
     // Check if somebody disconnected unexpectedly
     int error_code = WSAGetLastError();
@@ -192,12 +249,18 @@ void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_so
        fprintf(stderr, "recv failed with error code: %d", error_code);
 }
 
-// Otherwise the ther exists some IO operation on one of the client sockets
-// which means one of the clients has sent a request
 /**
- * Works as part of the select(), handles the client notifications.
+ * Works as part of the select(), serves the client who has sent request.
+ * First checks all the sockets from the socket list
+ * then if the socket has any notification checks it
+ * the notification by reading from the socket
+ * then handles all possiblilities: error, disconnection, incoming msg
+ *
+ * @param readfds_ptr pointer to the read file descriptor set of the select()
  * @param client_socket is the aray of sockets
- * @param sockaddr_in is the 
+ * @param buffer is the receive buffer of the server
+ * @param max_number_of_clients is the client capacity of the server
+ * @param max_rev_buffer_size is the capacty of the server buffer
  * */
 void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer, int max_number_of_clients, int max_recv_buffer_size){
      
