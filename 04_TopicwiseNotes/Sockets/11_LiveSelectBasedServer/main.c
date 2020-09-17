@@ -12,17 +12,90 @@
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
 
-void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket){
-    // Check if somebody disconnected unexpectedly
-    int error_code = WSAGetLastError();
-    if(error_code == WSAECONNRESET){
-       fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
-               inet_ntoa(address.sin_addr),
-               ntohs(address.sin_port)); 
-       closesocket(s);
-       client_socket[i] = 0
-    }else
-       fprintf(stderr, "recv failed with error code: %d", error_code);
+void init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size);
+SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
+void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
+void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
+void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* msg);
+void HandleServerClient(SOCKET* client_socket, struct sockaddr_in address, char* buffer);
+
+void CleanResources(SOCKET master, SOCKET* client_socket);
+void WsaThrowError(const char* msg);
+void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server){ 
+
+int main(int argc, char** argv){
+    
+    ///////////////////////////////////////////
+    // Declarations
+    ///////////////////////////////////////////
+
+    WSADATA wsa;                                // Windows Socket A. Data
+    SOCKET master;
+    SOCKET new_socket
+    SOCKET* client_socket
+    SOCKET s;
+    struct sockaddr_in server;
+    struct sockaddr_in address;
+    int activity;
+    int i;
+    int valread;
+    char* msg = "EACHO Daemon v1.0 \r\n";
+    char* buffer;
+    fd_set readfds;                             // Set of file descriptors
+     
+     
+    ///////////////////////////////////////////
+    // Initializations
+    ///////////////////////////////////////////
+    
+    init(&wsa, client_socket, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
+    
+    // Sets up the server and returns the server master
+    master = SetupTheServer(8888, &server, client_socket);  
+
+    ///////////////////////////////////////////
+    // Bind to the port and listen
+    ///////////////////////////////////////////
+    
+    // Start the server with a wait queue size of 10 
+    StartTheServer(master, 10, server, client_socket);
+  
+    ///////////////////////////////////////////
+    // Accept the client requests and 
+    // handle them asynchronously using polling
+    // with the help of select()
+    ///////////////////////////////////////////
+    
+    fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
+
+    while(TRUE){ 
+        // Setup the File Descriptor Set for select function()
+        SetupTheFdSet(master, &readfds_ptr, client_socket);
+        
+        // Wait for an activity on any of the sockets
+        // timeout is NULL, which means we wait indefinitely
+        activity = select(0, &readfds, NULL, NULL, NULL);
+
+        if( activity == SOCKET_ERROR )
+            WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
+        
+        // If master has an activity
+        // It means there is an incoming connection request
+        if(FD_ISSET(master, &readfds))
+            HandleServerMaster(master, address, msg);
+        // Otherwise the ther exists some IO operation on one of the client sockets
+        // which means one of the clients has sent a request
+        else
+            HandleServerClient(client_socket, address, buffer); 
+    }
+   
+    ///////////////////////////////////////////
+    // Cleanup the resources and exit 
+    ///////////////////////////////////////////
+    
+    CleanResources(master, client_socket);
+
+    return 0;
 }
 
 void init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size){
@@ -108,12 +181,27 @@ void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* ms
         } 
 }
 
+void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket){
+    // Check if somebody disconnected unexpectedly
+    int error_code = WSAGetLastError();
+    if(error_code == WSAECONNRESET){
+       fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
+               inet_ntoa(address.sin_addr),
+               ntohs(address.sin_port)); 
+       closesocket(s);
+       client_socket[i] = 0
+    }else
+       fprintf(stderr, "recv failed with error code: %d", error_code);
+}
+
 // Otherwise the ther exists some IO operation on one of the client sockets
 // which means one of the clients has sent a request
-void HandleServerClient(SOCKET* client_socket, struct addr_in address, char* buffer){
+void HandleServerClient(SOCKET* client_socket, struct sockaddr_in address, char* buffer){
+     
+    void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket);
     SOCKET s;
     int valread;
-    int addrlen = sizeof(address);
+    int addrlen = sizeof(sockaddr_in);
     
 
     for(i, = 0; i < MAX_NUMBER_OF_CLIENTS; ++i)
@@ -192,77 +280,3 @@ void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, S
 }
 
 
-int main(int argc, char** argv){
-    
-    ///////////////////////////////////////////
-    // Declarations
-    ///////////////////////////////////////////
-
-    WSADATA wsa;                                // Windows Socket A. Data
-    SOCKET master;
-    SOCKET new_socket
-    SOCKET* client_socket
-    SOCKET s;
-    struct sockaddr_in server;
-    struct sockaddr_in address;
-    int activity;
-    int i;
-    int valread;
-    char* msg = "EACHO Daemon v1.0 \r\n";
-    char* buffer;
-    fd_set readfds;                             // Set of file descriptors
-     
-     
-    ///////////////////////////////////////////
-    // Initializations
-    ///////////////////////////////////////////
-    
-    init(&wsa, client_socket, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
-    
-    // Sets up the server and returns the server master
-    master = SetupTheServer(8888, &server, client_socket);  
-
-    ///////////////////////////////////////////
-    // Bind to the port and listen
-    ///////////////////////////////////////////
-    
-    // Start the server with a wait queue size of 10 
-    StartTheServer(master, 10, server, client_socket);
-  
-    ///////////////////////////////////////////
-    // Accept the client requests and 
-    // handle them asynchronously using polling
-    // with the help of select()
-    ///////////////////////////////////////////
-    
-    fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
-
-    while(TRUE){ 
-        // Setup the File Descriptor Set for select function()
-        SetupTheFdSet(master, &readfds_ptr, client_socket);
-        
-        // Wait for an activity on any of the sockets
-        // timeout is NULL, which means we wait indefinitely
-        activity = select(0, &readfds, NULL, NULL, NULL);
-
-        if( activity == SOCKET_ERROR )
-            WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
-        
-        // If master has an activity
-        // It means there is an incoming connection request
-        if(FD_ISSET(master, &readfds))
-            HandleServerMaster(master, address, msg);
-        // Otherwise the ther exists some IO operation on one of the client sockets
-        // which means one of the clients has sent a request
-        else
-            HandleServerClient(client_socket, address, buffer); 
-    }
-   
-    ///////////////////////////////////////////
-    // Cleanup the resources and exit 
-    ///////////////////////////////////////////
-    
-    CleanResources(master, client_socket);
-
-    return 0;
-}
