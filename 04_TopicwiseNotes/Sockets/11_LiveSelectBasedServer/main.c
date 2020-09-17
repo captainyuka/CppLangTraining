@@ -12,10 +12,22 @@
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
 
+void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket){
+    // Check if somebody disconnected unexpectedly
+    int error_code = WSAGetLastError();
+    if(error_code == WSAECONNRESET){
+       fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
+               inet_ntoa(address.sin_addr),
+               ntohs(address.sin_port)); 
+       closesocket(s);
+       client_socket[i] = 0
+    }else
+       fprintf(stderr, "recv failed with error code: %d", error_code);
+}
 
 /*
  * Throw Error with given msg and also clean the WSA resources before leaving.
- * WSA Error Code is also appeneded appeneded at the end of the msg.
+ * WSA Error Code is also appeneded at the end of the msg.
  *
  * @param msg is the msg to output to the stderr
  */
@@ -40,7 +52,7 @@ void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, S
         closesocket(*client_sockets++);         // Close the current client socket
     free(client_sockets);                       // Free the dynamically allocated client_sockets array
     
-    if( server != -1)
+    if( server != -1 )
         closesocket(server);                    // Close the ccurent server socket
     WSACleanup();                               // Clean the WSA resources
     exit(EXIT_FAILURE);                         // Exit the program with an error
@@ -53,7 +65,7 @@ int main(int argc, char** argv){
     // Declarations
     ///////////////////////////////////////////
 
-    WSADATA wsa;
+    WSADATA wsa;                                // Windows Socket A. Data
     SOCKET master, new_socket, *client_socket, s;
     struct sockaddr_in server, address;
     int activity, addrlen, i, valread;
@@ -122,6 +134,73 @@ int main(int argc, char** argv){
             if(s > 0)
                 FD_SET(s, &readfds, &readfdss);
         }
+
+        // Wait for an activity on any of the sockets
+        // timeout is NULL, which means we wait indefinitely
+        activity = select(0, &readfds, NULL, NULL, NULL);
+
+        if( activity == SOCKET_ERROR )
+            WsaThrowErrorWithCleaningSockets("Select()", client_socket, server);
+        
+        // If master has an activity
+        // It means there is an incoming connection request
+        if(FD_ISSET(master, &readfds)){
+            if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
+                WsaThrowErrorWithCleaningSockets("Select()", client_socket, server);
+
+            printf("New Sconnection:::Socket fd = %d:::IP = %d:::PORT = %d\n",
+                    new_socket,
+                    inet_ntoa(address.sin_addr),
+                    ntohs(address.sin_port));
+
+            // Send new connection greeting message
+            if(send(new_socket, msg, strlen(msg), 0) != strlen(msg))
+                fprintf(stderr, "Msg Sending Failed\n");
+            else
+                fprintf(stderr, "DEBUG::::: Msg Has been sent successfully\n");
+            
+            // Add the new socket to the array of sockets
+            for(i = 0; i < max_clients; ++i)
+                if(client_socket[i] == 0){
+                    client_socket[i] = new_socket;
+                    fprintf(stderr, "DEBUG:::::Adding socket to the list of sockets at index %d\n", ,);
+                    break;
+                } 
+        }
+        // Otherwise the ther exists some IO operation on one of the client sockets
+        // which means one of the clients has sent a request
+        else{
+            for(i, = 0; i < MAX_NUMBER_OF_CLIENTS; ++i)
+                if(FD_ISSET((s=client_socket[i]), &readfds)){
+                    // Get details of the client
+                    getpeername(s, (struct sockaddr*)&address, (int*)&addrlen);
+
+                    // Check if it was for closing
+                    // and also read the incoming msg
+                    // do not forget, recv doeos not place a null at the end of str
+                    valread = recv(s, buffer, MAX_RECV_BUFFER_SIZE);
+
+                    if(valread == SOCKET_ERROR)
+                        DisconnectTheClient(address, s, client_socket);
+                    else if(valread == 0){
+                        // Somebody disconnected, print the client's details
+                        printf("Host disconnected:::IP = %s, PORT = %d\n", 
+                                inet_ntoa(address.sin_addr), 
+                                ntohs(address.sin_port) );
+                        // Close the socket and mark as 0 in the client list for reuse
+                        closesocket(s);
+                        client_socket[i] = 0;
+                    }else{
+                        // Echo back the msg that came in  
+                        buffer[valread] = '\0';
+                        printf("%s:%d - %s\n", inet_ntoa(address.sin_addr),
+                                               ntohs(address.sin_port),
+                                               buffer);
+                        send(s, buffer, valread, 0)
+                    }
+                }
+        }
+
             
     }
    
