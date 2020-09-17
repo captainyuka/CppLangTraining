@@ -13,17 +13,17 @@
 #define MAX_RECV_BUFFER_SIZE 1024
 
 // Functions related to the Server
-WSADATA* Init(SOCKET* client_socket);
+WSADATA* Init(SOCKET*, int);
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
-void HandleServerMaster(SOCKET master, const char* msg);
-void HandleServerClient(SOCKET* client_socket, struct sockaddr_in address, char* buffer);
+void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, int max_number_of_clients);
+void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer, int max_number_of_clients, int max_recv_buffer_size);
 
 // Helper functions for the server
 void CleanResources(SOCKET master, SOCKET* client_socket);
 void WsaThrowError(const char* msg);
-void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server){ 
+void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
 
 int main(int argc, char** argv){
     
@@ -31,9 +31,9 @@ int main(int argc, char** argv){
     // Declarations
     ///////////////////////////////////////////
 
-    WSADATA* wsa;                                // Windows Socket A. Data, Required to be initialized to use Windows Sockets
+    WSADATA* wsa;                               // Windows Socket A. Data, Required to be initialized to use Windows Sockets
     SOCKET master;                              // Server master's SOCKET
-    SOCKET* client_socket                       // List of client SOCKETs that has connected to the server master
+    SOCKET* client_socket;                      // List of client SOCKETs that has connected to the server master
     struct sockaddr_in server;                  // Contains details of the server socket, like IPV4, its port etc.
     int activity;                               // Acitivity notification from select()[either new connection or client request]
     char* msg = "EACHO Daemon v1.0 \r\n";       // First msg to send to the client when it first get connected to the master
@@ -42,7 +42,7 @@ int main(int argc, char** argv){
     
     // TODO: Take the following variables as argument to main
     int max_number_of_clients = MAX_NUMBER_OF_CLIENTS;
-    int max_recv_buffer_size = MAX_RECV_BUFFER_SIZE
+    int max_recv_buffer_size = MAX_RECV_BUFFER_SIZE;
      
     ///////////////////////////////////////////
     // Init variables and Setup the Server
@@ -51,7 +51,7 @@ int main(int argc, char** argv){
     // Initialize server basics, prepares for setup
     client_socket = (SOCKET*)malloc(sizeof(SOCKET) * max_number_of_clients);
     buffer = (char*)malloc((max_recv_buffer_size+1) * sizeof(char));      // Extra +1 for null termination
-    wsa = Init(client_socket);
+    wsa = Init(client_socket, max_number_of_clients);
     
     // Sets up the server and returns the server master
     master = SetupTheServer(8888, &server, client_socket);  
@@ -79,7 +79,7 @@ int main(int argc, char** argv){
     while(TRUE){                                                                // Server runs indefinitely
         // Get prepared for select() call
         // Make sure select() traces server master and its clients for any notification
-        SetupTheFdSet(master, &readfds_ptr, client_socket);
+        SetupTheFdSet(master, &readfds, client_socket);
         
         // Wait for an activity on any of the sockets
         activity = select(0, &readfds, NULL, NULL, NULL);                       // timeout is NULL, which means we wait indefinitely
@@ -91,7 +91,7 @@ int main(int argc, char** argv){
         if(FD_ISSET(master, &readfds))
             // If master has an activity
             // It means there is an incoming connection request
-             HandleServerMaster(master, msg);
+             HandleServerMaster(master, client_socket, msg, MAX_NUMBER_OF_CLIENTS);
         else
             // Otherwise the ther exists some IO operation on one of the client sockets
             // which means one of the clients has sent a request
@@ -109,7 +109,7 @@ int main(int argc, char** argv){
  * @param client_socket is a list of client sockets that has connected to the ser
  * @return wsa_ptr is a pointer to the WSADATA structure which is required to be initialized before using winsock2
  */
-WSADATA* Init(SOCKET* client_socket){
+WSADATA* Init(SOCKET* client_socket, int max_number_of_clients){
     WSADATA* wsa_ptr;
     int i;
 
@@ -123,7 +123,7 @@ WSADATA* Init(SOCKET* client_socket){
         exit(EXIT_FAILURE);
     }
    
-    return wsa_ptr
+    return wsa_ptr;
 } 
 
 /**
@@ -136,6 +136,8 @@ WSADATA* Init(SOCKET* client_socket){
  * @return return the server socket
  */
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket){  
+    SOCKET master;
+
     // Create socket
     if( (master=socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET )
         WsaThrowErrorWithCleaningSockets("socket()", client_socket, -1);
@@ -182,15 +184,15 @@ void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket){
     int i;
 
     // Clear the socket fd set
-    FD_ZERO(readfds);
+    FD_ZERO(readfds_ptr);
 
     // Add the master socket to the fd set
-    FD_SET(master, readfds);
+    FD_SET(master, readfds_ptr);
     
     // Add child sockets to the fd set
     for(i=0; i < MAX_NUMBER_OF_CLIENTS; ++i)
         if((s=client_socket[i]) > 0)
-            FD_SET(s, readfds);
+            FD_SET(s, readfds_ptr);
 } 
 
 
@@ -201,10 +203,11 @@ void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket){
  * @param msg is the hello msg to be sent to the new connection.
  *
  */
-void HandleServerMaster(SOCKET master, const char* msg){
+void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, int max_number_of_clients){
     SOCKET new_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(struct sockaddr_in);
+    int i;
 
     if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
         WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
@@ -221,7 +224,7 @@ void HandleServerMaster(SOCKET master, const char* msg){
         fprintf(stderr, "DEBUG::::: Msg Has been sent successfully\n");
     
     // Add the new socket to the array of sockets
-    for(i = 0; i < max_clients; ++i)
+    for(i = 0; i < max_number_of_clients; ++i)
         if(client_socket[i] == 0){
             client_socket[i] = new_socket;
             fprintf(stderr, "DEBUG:::::Adding socket to the list of sockets at index %d\n", i);
@@ -239,12 +242,14 @@ void HandleServerMaster(SOCKET master, const char* msg){
 void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket){
     // Check if somebody disconnected unexpectedly
     int error_code = WSAGetLastError();
+    int i;
+
     if(error_code == WSAECONNRESET){
        fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
                inet_ntoa(address.sin_addr),
                ntohs(address.sin_port)); 
        closesocket(s);
-       client_socket[i] = 0
+       client_socket[i] = 0;
     }else
        fprintf(stderr, "recv failed with error code: %d", error_code);
 }
@@ -267,18 +272,19 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer
     void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket);
     SOCKET s;
     int valread;
-    struct sockaddr_in address,
+    struct sockaddr_in address;
     int addrlen = sizeof(struct sockaddr_in);
-    
-    for(i, = 0; i < max_number_of_clients; ++i)
+    int i;
+
+    for(i = 0; i < max_number_of_clients; ++i)
         if(FD_ISSET((s=client_socket[i]), readfds_ptr)){
             // Get details of the client
-            getpeername(s, (struct sockaddr*)&address, (int*)&addrlen);
+            getpeername(s, (struct sockaddr*)&address, &addrlen);
 
             // Check if it was for closing
             // and also read the incoming msg
             // do not forget, recv doeos not place a null at the end of str
-            valread = recv(s, buffer, max_recv_buffer_size);
+            valread = recv(s, buffer, max_recv_buffer_size, 0);
 
             if(valread == SOCKET_ERROR)
                 DisconnectTheClient(address, s, client_socket);
@@ -296,7 +302,7 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer
                 printf("%s:%d - %s\n", inet_ntoa(address.sin_addr),
                                        ntohs(address.sin_port),
                                        buffer);
-                send(s, buffer, valread, 0)
+                send(s, buffer, valread, 0);
             }
         }
 }
