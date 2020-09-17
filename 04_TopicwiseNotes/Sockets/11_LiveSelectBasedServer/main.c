@@ -13,7 +13,6 @@
 #define MAX_RECV_BUFFER_SIZE 1024
 
 // Functions related to the Server
-WSADATA* Init(SOCKET*, int);
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
@@ -31,7 +30,7 @@ int main(int argc, char** argv){
     // Declarations
     ///////////////////////////////////////////
 
-    WSADATA* wsa;                               // Windows Socket A. Data, Required to be initialized to use Windows Sockets
+    WSADATA wsa;                               // Windows Socket A. Data, Required to be initialized to use Windows Sockets
     SOCKET master;                              // Server master's SOCKET
     SOCKET* client_socket;                      // List of client SOCKETs that has connected to the server master
     struct sockaddr_in server;                  // Contains details of the server socket, like IPV4, its port etc.
@@ -39,7 +38,8 @@ int main(int argc, char** argv){
     char* msg = "EACHO Daemon v1.0 \r\n";       // First msg to send to the client when it first get connected to the master
     char* buffer;                               // Server receive buffer, has a max length that has been taken as parameter from cmd
     fd_set readfds;                             // Set of file descriptors
-    
+    int i;
+
     // TODO: Take the following variables as argument to main
     int max_number_of_clients = MAX_NUMBER_OF_CLIENTS;
     int max_recv_buffer_size = MAX_RECV_BUFFER_SIZE;
@@ -51,8 +51,18 @@ int main(int argc, char** argv){
     // Initialize server basics, prepares for setup
     client_socket = (SOCKET*)malloc(sizeof(SOCKET) * max_number_of_clients);
     buffer = (char*)malloc((max_recv_buffer_size+1) * sizeof(char));      // Extra +1 for null termination
-    wsa = Init(client_socket, max_number_of_clients);
+     
+    // init all sockets as invalid, later we will put valid ones
+    for(i = 0; i < max_number_of_clients; ++i)
+        client_socket[i] = 0;
     
+    // Init the WSA
+    if(WSAStartup(MAKEWORD(2, 2), &wsa) != 0){
+        fprintf(stderr, "Failed to startup the WSA:: WSA Error %d\n", WSAGetLastError());
+        exit(EXIT_FAILURE);
+    }
+  
+
     // Sets up the server and returns the server master
     master = SetupTheServer(8888, &server, client_socket);  
 
@@ -104,11 +114,14 @@ int main(int argc, char** argv){
 }
 
 /**
+ * 
+ * DEPRECATED
+ *
+ *
  * Initizalizes the server fundamental variables and returns pointer to the WSADATA(Windows Socket A. DATA) handle.
  *
  * @param client_socket is a list of client sockets that has connected to the ser
  * @return wsa_ptr is a pointer to the WSADATA structure which is required to be initialized before using winsock2
- */
 WSADATA* Init(SOCKET* client_socket, int max_number_of_clients){
     WSADATA* wsa_ptr;
     int i;
@@ -125,6 +138,7 @@ WSADATA* Init(SOCKET* client_socket, int max_number_of_clients){
    
     return wsa_ptr;
 } 
+ */
 
 /**
  * Sets up the server socket return the socket.
