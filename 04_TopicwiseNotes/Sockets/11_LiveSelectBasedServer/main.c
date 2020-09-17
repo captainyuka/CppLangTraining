@@ -25,13 +25,88 @@ void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_so
        fprintf(stderr, "recv failed with error code: %d", error_code);
 }
 
-void PrepareSocket(){}
+void init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size){
+    int i;
+    client_socket = (SOCKET*)malloc(sizeof(SOCKET) * max_number_of_clients);
+    buffer = (char*)malloc((max_recv_buffer_size+1) * sizeof(char));      // Extra +1 for null termination
 
-void StartTheServer(){}
+    // init all sockets as invalid, later we will put valid ones
+    for(i = 0; i <max_number_of_clients; ++i)
+        client_socket[i] = 0;
+    
+    // Init the WSA
+    if(WSAStartup(MAKEWORD(2, 2), wsa_ptr) != 0){
+        fprintf(stderr, "Failed to startup the WSA:: WSA Error %d\n", WSAGetLastError());
+        exit(EXIT_FAILURE);
+    }
+    
+    return &wsa;
+} 
 
-void SetupTheFdSet(){} 
+SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket){  
+    // Create socket
+    if( (master=socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET )
+        WsaThrowErrorWithCleaningSockets("socket()", client_socket, -1);
 
-void HandleServerMaster(){}
+    // Prepare the sockaddr_in structure
+    server->sin_family = AF_INET;                // use IPv4
+    server->sin_addr.s_addr = INADDR_ANY;        // Anyone can connect
+    server->sin_port = htons( 8888 );            // Server will use 8888 port
+    
+    return master;
+}
+
+void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket){
+    // Bind server to the specified port
+    if( bind(master, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
+        WsaThrowErrorWithCleaningSockets("bind()", client_socket, master);
+    
+    // Listen to incoming connections
+    listen(master, max_wait_queue_size); 
+}
+
+void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket){ 
+    SOCKET s;
+    int i;
+
+    // Clear the socket fd set
+    FD_ZERO(readfds);
+
+    // Add the master socket to the fd set
+    FD_SET(master, readfds);
+    
+    // Add child sockets to the fd set
+    for(i=0; i < MAX_NUMBER_OF_CLIENTS; ++i)
+        if((s=client_socket[i]) > 0)
+            FD_SET(s, readfds);
+} 
+
+void HandleServerMaster(SOCKET master, struct sockaddr_in address,const char* msg){
+    SOCKET new_socket;
+    int addrlen = sizeof(address);
+
+    if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
+        WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
+
+    printf("New Sconnection:::Socket fd = %d:::IP = %d:::PORT = %d\n",
+            new_socket,
+            inet_ntoa(address.sin_addr),
+            ntohs(address.sin_port));
+
+    // Send new connection greeting message
+    if(send(new_socket, msg, strlen(msg), 0) != strlen(msg))
+        fprintf(stderr, "Msg Sending Failed\n");
+    else
+        fprintf(stderr, "DEBUG::::: Msg Has been sent successfully\n");
+    
+    // Add the new socket to the array of sockets
+    for(i = 0; i < max_clients; ++i)
+        if(client_socket[i] == 0){
+            client_socket[i] = new_socket;
+            fprintf(stderr, "DEBUG:::::Adding socket to the list of sockets at index %d\n", i);
+            break;
+        } 
+}
 
 // Otherwise the ther exists some IO operation on one of the client sockets
 // which means one of the clients has sent a request
@@ -135,6 +210,8 @@ int main(int argc, char** argv){
     ///////////////////////////////////////////
     // Initializations
     ///////////////////////////////////////////
+    
+    init(&wsa, client_socket,MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
 
     client_socket = (SOCKET*)malloc(sizeof(SOCKET) * MAX_NUMBER_OF_CLIENTS);
     buffer = (char*)malloc((MAX_RECV_BUFFER_SIZE+1) * sizeof(char));      // Extra +1 for null termination
@@ -149,26 +226,15 @@ int main(int argc, char** argv){
         return EXIT_FAILURE;
     }
     
-    // Create socket
-    if( (master=socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET )
-        WsaThrowErrorWithCleaningSockets("socket()", client_socket, -1);
-    
-    // Prepare the sockaddr_in structure
-    server.sin_family = AF_INET;                // use IPv4
-    server.sin_addr.s_addr = INADDR_ANY;        // Anyone can connect
-    server.sin_port = htons( 8888 );            // Server will use 8888 port
+    // Sets up the server and returns the server master
+    master = SetupTheServer(8888, &server, client_socket);  
 
-  
     ///////////////////////////////////////////
     // Bind to the port and listen
     ///////////////////////////////////////////
     
-    // Bind server to the specified port
-    if( bind(master, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
-        WsaThrowErrorWithCleaningSockets("bind()", client_sockets, master);
-    
-    // Listen to incoming connections
-    listen(master, 10);
+    // Start the server with a wait queue size of 10 
+    StartTheServer(master, 10, server, client_socket);
   
     ///////////////////////////////////////////
     // Accept the client requests and 
@@ -179,59 +245,25 @@ int main(int argc, char** argv){
     fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
 
     addrlen = sizeof(struct sockaddr_in);
-    while(TRUE){
-        // Clear the socket fd set
-        FD_ZERO(&readfds);
-
-        // Add the master socket to the fd set
-        FD_SET(master, &readfds);
+    while(TRUE){ 
+        // Setup the File Descriptor Set for select function()
+        SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
         
-        // Add child sockets to the fd set
-        for(i=0; i < MAX_NUMBER_OF_CLIENTS; ++i){
-            s = client_socket[i];,
-            if(s > 0)
-                FD_SET(s, &readfds, &readfdss);
-        }
-
         // Wait for an activity on any of the sockets
         // timeout is NULL, which means we wait indefinitely
         activity = select(0, &readfds, NULL, NULL, NULL);
 
         if( activity == SOCKET_ERROR )
-            WsaThrowErrorWithCleaningSockets("Select()", client_socket, server);
+            WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
         
         // If master has an activity
         // It means there is an incoming connection request
-        if(FD_ISSET(master, &readfds)){
-            if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
-                WsaThrowErrorWithCleaningSockets("Select()", client_socket, server);
-
-            printf("New Sconnection:::Socket fd = %d:::IP = %d:::PORT = %d\n",
-                    new_socket,
-                    inet_ntoa(address.sin_addr),
-                    ntohs(address.sin_port));
-
-            // Send new connection greeting message
-            if(send(new_socket, msg, strlen(msg), 0) != strlen(msg))
-                fprintf(stderr, "Msg Sending Failed\n");
-            else
-                fprintf(stderr, "DEBUG::::: Msg Has been sent successfully\n");
-            
-            // Add the new socket to the array of sockets
-            for(i = 0; i < max_clients; ++i)
-                if(client_socket[i] == 0){
-                    client_socket[i] = new_socket;
-                    fprintf(stderr, "DEBUG:::::Adding socket to the list of sockets at index %d\n", ,);
-                    break;
-                } 
-        }
+        if(FD_ISSET(master, &readfds))
+            HandleServerMaster(master, address, msg);
         // Otherwise the ther exists some IO operation on one of the client sockets
         // which means one of the clients has sent a request
         else
-            HandleServerClient(client_socket, address, buffer);
-               }
-
-            
+            HandleServerClient(client_socket, address, buffer); 
     }
    
     ///////////////////////////////////////////
