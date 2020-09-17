@@ -12,7 +12,7 @@
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
 
-void init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size);
+void Init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size);
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
@@ -29,34 +29,26 @@ int main(int argc, char** argv){
     // Declarations
     ///////////////////////////////////////////
 
-    WSADATA wsa;                                // Windows Socket A. Data
-    SOCKET master;
-    SOCKET new_socket
-    SOCKET* client_socket
-    SOCKET s;
-    struct sockaddr_in server;
-    struct sockaddr_in address;
-    int activity;
-    int i;
-    int valread;
-    char* msg = "EACHO Daemon v1.0 \r\n";
-    char* buffer;
+    WSADATA wsa;                                // Windows Socket A. Data, Required to be initialized to use Windows Sockets
+    SOCKET master;                              // Server master's SOCKET
+    SOCKET* client_socket                       // List of client SOCKETs that has connected to the server master
+    struct sockaddr_in server;                  // Contains details of the server socket, like IPV4, its port etc.
+    int activity;                               // Acitivity notification from select()[either new connection or client request]
+    char* msg = "EACHO Daemon v1.0 \r\n";       // First msg to send to the client when it first get connected to the master
+    char* buffer;                               // Server receive buffer, has a max length that has been taken as parameter from cmd
     fd_set readfds;                             // Set of file descriptors
      
      
     ///////////////////////////////////////////
-    // Initializations
+    // Init variables and Setup the Server
     ///////////////////////////////////////////
     
-    init(&wsa, client_socket, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
+    // Initialize server basics, prepares for setup
+    Init(&wsa, client_socket, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFF_SIZE);
     
     // Sets up the server and returns the server master
     master = SetupTheServer(8888, &server, client_socket);  
 
-    ///////////////////////////////////////////
-    // Bind to the port and listen
-    ///////////////////////////////////////////
-    
     // Start the server with a wait queue size of 10 
     StartTheServer(master, 10, server, client_socket);
   
@@ -68,37 +60,43 @@ int main(int argc, char** argv){
     
     fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
 
-    while(TRUE){ 
-        // Setup the File Descriptor Set for select function()
+    // The following while loop first lets the select() function trace all the sockets related to this server.
+    // we run the select() with infinite waiting which means up until any notication being generated
+    // by some socket, server process will be waiting, and when notification exists, cpu schedules this process
+    // whenever the cpu is available. 
+    // 
+    // Then we check the notification, if the master has a notification,
+    //      this means that there is a new connection request to the server, we handle it, 
+    // if a client has a notification
+    //      this means we have a reques from that client, server handles the request
+    while(TRUE){                                                                // Server runs indefinitely
+        // Get prepared for select() call
+        // Make sure select() traces server master and its clients for any notification
         SetupTheFdSet(master, &readfds_ptr, client_socket);
         
         // Wait for an activity on any of the sockets
-        // timeout is NULL, which means we wait indefinitely
-        activity = select(0, &readfds, NULL, NULL, NULL);
-
+        activity = select(0, &readfds, NULL, NULL, NULL);                       // timeout is NULL, which means we wait indefinitely
+        
+        // Check what the activity is about
         if( activity == SOCKET_ERROR )
             WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
         
-        // If master has an activity
-        // It means there is an incoming connection request
         if(FD_ISSET(master, &readfds))
-            HandleServerMaster(master, address, msg);
-        // Otherwise the ther exists some IO operation on one of the client sockets
-        // which means one of the clients has sent a request
+            // If master has an activity
+            // It means there is an incoming connection request
+             HandleServerMaster(master, address, msg);
         else
-            HandleServerClient(client_socket, address, buffer); 
+            // Otherwise the ther exists some IO operation on one of the client sockets
+            // which means one of the clients has sent a request
+            HandleServerClient(&readfds, client_socket, buffer, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFFER_SIZE); 
     }
    
-    ///////////////////////////////////////////
-    // Cleanup the resources and exit 
-    ///////////////////////////////////////////
-    
-    CleanResources(master, client_socket);
+    CleanResources(master, client_socket);                  // Clean up the resources before quiting 
 
     return 0;
 }
 
-void init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size){
+void Init(WSADATA* wsa_ptr, SOCKET* client_socket, int max_number_of_clients, int max_recv_buff_size){
     int i;
     client_socket = (SOCKET*)malloc(sizeof(SOCKET) * max_number_of_clients);
     buffer = (char*)malloc((max_recv_buffer_size+1) * sizeof(char));      // Extra +1 for null termination
@@ -196,23 +194,28 @@ void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_so
 
 // Otherwise the ther exists some IO operation on one of the client sockets
 // which means one of the clients has sent a request
-void HandleServerClient(SOCKET* client_socket, struct sockaddr_in address, char* buffer){
+/**
+ * Works as part of the select(), handles the client notifications.
+ * @param client_socket is the aray of sockets
+ * @param sockaddr_in is the 
+ * */
+void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer, int max_number_of_clients, int max_recv_buffer_size){
      
     void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket);
     SOCKET s;
     int valread;
-    int addrlen = sizeof(sockaddr_in);
+    struct sockaddr_in address,
+    int addrlen = sizeof(struct sockaddr_in);
     
-
-    for(i, = 0; i < MAX_NUMBER_OF_CLIENTS; ++i)
-        if(FD_ISSET((s=client_socket[i]), &readfds)){
+    for(i, = 0; i < max_number_of_clients; ++i)
+        if(FD_ISSET((s=client_socket[i]), readfds_ptr)){
             // Get details of the client
             getpeername(s, (struct sockaddr*)&address, (int*)&addrlen);
 
             // Check if it was for closing
             // and also read the incoming msg
             // do not forget, recv doeos not place a null at the end of str
-            valread = recv(s, buffer, MAX_RECV_BUFFER_SIZE);
+            valread = recv(s, buffer, max_recv_buffer_size);
 
             if(valread == SOCKET_ERROR)
                 DisconnectTheClient(address, s, client_socket);
@@ -235,14 +238,24 @@ void HandleServerClient(SOCKET* client_socket, struct sockaddr_in address, char*
         }
 }
 
-void CleanResources(SOCKET master, SOCKET* client_socket){
-
+/**
+ * Cleans the resources related to sockets and WSA(Window Socket A.)
+ *
+ * @param master is the server socket
+ * @param client_socket is an array of client sockets, may contain NULL spots at the end
+ */
+void CleanResources(SOCKET master, SOCKET* client_socket){ 
+    // Make sure all client sockets has been deallocated
     while(client_socket != NULL)               // Traverse the array
         closesocket(*client_socket++);         // Close the current client socket
-    free(client_socket);                      // Free the dynamically allocated client_sockets array
+
+    // Deallocate the array itself
+    free(client_socket);                      // Free the dynamically allocated client_sockets array 
     
-   
+    // Close the server master
     closesocket(master);
+
+    // Deallocate Windows Socket related services
     WSACleanup(); 
 }
 
