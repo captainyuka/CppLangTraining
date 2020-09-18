@@ -1,6 +1,7 @@
 #include <stdio.h>   
 #include <string.h>
 #include <stdlib.h>
+#include <regex>
 #include <winsock2.h>
 #include "PcapLiveDeviceList.h"
 #include "PlatformSpecificUtils.h"       // Use cross platform sleep method
@@ -15,18 +16,7 @@
 // That is why we allocate the resources dynamically rather than staticly
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
-
-// Functions related to the Server
-SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
-void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
-void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
-void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, int max_number_of_clients);
-void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer, int max_number_of_clients, int max_recv_buffer_size);
-
-// Helper functions for the server
-void CleanResources(SOCKET master, SOCKET* client_socket);
-void WsaThrowError(const char* msg);
-void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
+#define MAX_SOCKET_TO_TRACK_PER_CLIENT 20
 
 /**
  * A struct for collecting packet statistics
@@ -89,6 +79,21 @@ struct PacketStats
 		printf("UDP packet count:      %d\n", udpPacketCount);
 	}
 };
+
+// Functions related to the Server
+SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
+void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
+void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
+void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, int max_number_of_clients);
+void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, 
+                        char* buffer, int max_number_of_clients, int max_recv_buffer_size,
+                        PacketStats*** packet_stats, int max_socket_count_per_client );
+
+// Helper functions for the server
+void CleanResources(SOCKET master, SOCKET* client_socket);
+void WsaThrowError(const char* msg);
+void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
+
 
 
 /**
@@ -170,6 +175,7 @@ void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
 	// clear stats
 	stats.clear();
 }
+
 /*
 void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
 	// Using filters
@@ -214,7 +220,6 @@ void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
  */
 int main(int argc, char* argv[])
 {
-    PacketStats stats;
     /*pcpp::PcapLiveDevice* dev =*/// SetupAndStartLiveCapture(stats);
      
     ///////////////////////////////////////////
@@ -234,7 +239,13 @@ int main(int argc, char* argv[])
     // TODO: Take the following variables as argument to main
     int max_number_of_clients = MAX_NUMBER_OF_CLIENTS;
     int max_recv_buffer_size = MAX_RECV_BUFFER_SIZE;
-     
+    int max_socket_count_per_client = MAX_SOCKET_TO_TRACK_PER_CLIENT; 
+
+    // Allocate PacketStats for each client
+    PacketStats*** stats = (PacketStats***)malloc(sizeof(PacketStats**) * max_number_of_clients);
+    for(i = 0; i < max_number_of_clients; ++i)
+        stats[i] = NULL; 
+
     ///////////////////////////////////////////
     // Init variables and Setup the Server
     ///////////////////////////////////////////
@@ -251,8 +262,7 @@ int main(int argc, char* argv[])
     if(WSAStartup(MAKEWORD(2, 2), &wsa) != 0){
         fprintf(stderr, "Failed to startup the WSA:: WSA Error %d\n", WSAGetLastError());
         exit(EXIT_FAILURE);
-    }
-  
+    } 
 
     // Sets up the server and returns the server master
     master = SetupTheServer(8888, &server, client_socket);  
@@ -296,7 +306,8 @@ int main(int argc, char* argv[])
         else
             // Otherwise the ther exists some IO operation on one of the client sockets
             // which means one of the clients has sent a request
-            HandleServerClient(&readfds, client_socket, buffer, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFFER_SIZE); 
+            HandleServerClient(&readfds, client_socket, buffer, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFFER_SIZE, 
+                               stats, max_socket_count_per_client ); 
     }
    
     CleanResources(master, client_socket);                  // Clean up the resources before quiting 
@@ -412,6 +423,26 @@ void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, i
 }
 
 /**
+ * Deallocates a client's stats.
+ *
+ * @param packet_stats is an array of PacketStats**.
+ *        Each client has PacketStats* array.
+ *        We keep track of each stat a client wants as PacketStats*
+ *        because of the performance issues. We only move pointers.
+ *        Remember PacketStats object for each client is updated millions of times per second.
+ * @param client_index is the index of the client inside of the packet_stats or client_socket array
+ */
+void DeallocateClientStats(PacketStats*** packet_stats, int client_index){
+    PacketStats** selected_client_data = packet_stats[client_index];
+    packet_stats[client_index] = NULL;
+    int i;
+
+    for(i = 0; selected_client_data[i] != NULL; ++i)
+        free(selected_client_data[i]);
+    free(selected_client_data);
+}
+
+/**
  * Handles proper or unexpected disconnection requests.
  *
  * @param address is the client address data.
@@ -419,32 +450,60 @@ void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, i
  * @param client_socket is the list of client sockets of the server
  * @param i is the index of the current client in the client_socket array
  */
-void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket, int i){
+void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket, 
+                         PacketStats*** packet_stats, int client_index){
+    void DeallocateClientStats(PacketStats*** packet_stats, int client_index);
+
     // Check if somebody disconnected unexpectedly
     int error_code = WSAGetLastError();
 
     if(error_code == WSAECONNRESET){
-       fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
-               inet_ntoa(address.sin_addr),
-               ntohs(address.sin_port)); 
-       closesocket(s);
-       client_socket[i] = 0;
+        fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
+                inet_ntoa(address.sin_addr),
+                ntohs(address.sin_port)); 
+        closesocket(s);
+        DeallocateClientStats(packet_stats, client_index);
     }else
        fprintf(stderr, "recv failed with error code: %d", error_code);
 }
 
-void HandleClientRequest(SOCKET s,struct sockaddr_in address, char* buffer, int buffer_str_len){
+
+/**
+ * Cleans the trailing \r\n in windows, \n in unix based systems.
+ */
+char* CleanMsg(char* msg, int len){
+
+    while(msg[len-1]=='\r' || msg[len-1]=='\n')
+        --len;
+    
+    msg[len] = '\0';
+    return msg;
+}
+
+void HandleClientRequest(SOCKET s, struct sockaddr_in address, 
+                         char* buffer, int buffer_str_len,
+                         PacketStats*** packet_stats, int client_index, int max_socket_count_per_client){
+    char* CleanMsg(char* msg, int len);
     // Echo back the msg that came in  
     buffer[buffer_str_len] = '\0';
     printf("%s:%d - %s\n", inet_ntoa(address.sin_addr),
                            ntohs(address.sin_port),
                            buffer);
-    if( strstr(buffer,":") != NULL ){     
-    	std::string interfaceIPAddr = "185.85.188.58";
-        SetupAndStartLiveCapture(stats, interfaceIPAddr);
-        
-    }
+    buffer = CleanMsg(buffer, buffer_str_len);
+    buffer_str_len = strlen(buffer); 
+    std::string str;
+    str += buffer;
 
+    std::regex add_cmd_pattern("(ADD:)(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])(:[0-9]*)");
+    std::regex del_cmd_pattern("(DEL:)(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])(:[0-9]*)");
+
+    if( regex_match(str.begin(), str.end(), add_cmd_pattern) )
+        printf("ADD Matched\n");
+    else if( regex_match(str.begin(), str.end(), del_cmd_pattern) )
+        printf("DEL Matched\n");
+    else
+        printf("No Match\n");
+    
     send(s, buffer, buffer_str_len, 0); 
 }
 
@@ -460,10 +519,23 @@ void HandleClientRequest(SOCKET s,struct sockaddr_in address, char* buffer, int 
  * @param buffer is the receive buffer of the server
  * @param max_number_of_clients is the client capacity of the server
  * @param max_rev_buffer_size is the capacty of the server buffer
+ * @param packet_stats is an array of PacketStats** array.
+ *        It is used to keep track of client target socket speeds.
+ *        Each client has an array of PacketStats**, all clients data inside PacketStats***.
+ *        Each client array contains an array of PacketStats*. 
+ *        We keep tract of PacketStats as pointer because of performance issues since we
+ *        move these PacketStats every time a packet comes, the performance is critical.
+ *
  * */
-void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer, int max_number_of_clients, int max_recv_buffer_size){
+void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, 
+                        char* buffer, int max_number_of_clients, int max_recv_buffer_size,
+                        PacketStats*** packet_stats,int max_socket_count_per_client ){
      
-    void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket, int i);
+    void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket, 
+                             PacketStats*** packet_stats, int client_index);
+    void HandleClientRequest(SOCKET s, struct sockaddr_in address, 
+                            char* buffer, int buffer_str_len,
+                            PacketStats*** packet_stats, int client_index, int max_socket_count_per_client ); 
     SOCKET s;
     int valread;
     struct sockaddr_in address;
@@ -481,7 +553,7 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer
             valread = recv(s, buffer, max_recv_buffer_size, 0);
 
             if(valread == SOCKET_ERROR)
-                DisconnectTheClient(address, s, client_socket, i);
+                DisconnectTheClient(address, s, client_socket, packet_stats, i);
             else if(valread == 0){
                 // Somebody disconnected, print the client's details
                 printf("Host disconnected:::IP = %s, PORT = %d\n", 
@@ -492,7 +564,7 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, char* buffer
                 client_socket[i] = 0;
             }else       
                 // client has sent a msg which is now in buffer with length of valread
-                HandleClientRequest(s, address, buffer, valread); 
+                HandleClientRequest(s, address, buffer, valread, packet_stats, i, max_socket_count_per_client ); 
         }
 }
 
