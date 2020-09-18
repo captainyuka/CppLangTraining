@@ -23,6 +23,9 @@
  */
 struct PacketStats
 {
+    std::string ip;
+    int port;
+
 	int ipv4PacketCount;
 	int tcpPacketCount;
 	int udpPacketCount;
@@ -38,7 +41,11 @@ struct PacketStats
 	/**
 	 * Constructor
 	 */
-	PacketStats() { clear(); }
+	PacketStats(std::string ip, int port) { 
+        this.ip = ip;
+        this.port = port;
+        clear(); 
+    }
 
 	/**
 	 * Collect stats from a packet
@@ -57,7 +64,7 @@ struct PacketStats
         long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
         //printf("Packet Timestamp-> sec=%ld - nsec=%ld\n", packet_timestamp_second, packet_timestamp_nsecond);
         
-        if( packet_timestamp_second != last_second && last_second != -1){
+        if(packet_timestamp_second != last_second && last_second != -1){
            last_second = packet_timestamp_second;
            printf("Bandwidth: %ld pps\n", packet_count);
            packet_count = 0;
@@ -480,6 +487,41 @@ char* CleanMsg(char* msg, int len){
     return msg;
 }
 
+int AddSocket( struct sockaddr_in address, PacketStats*** packet_stats, int client_index, int max_socket_count ){
+    
+    std::string ip;
+    int port;
+
+    PacketStats* stats = new PacketStats(ip, port); 
+    
+    int i = 0;
+    while(packet_stats[client_index][i++] != NULL);
+    --i;
+    packet_stats[client_index][i] = stats;
+}
+
+int DelSocket(std::string ip, int port,
+              PacketStats*** packet_stats, int client_index, int max_socket_count){
+    std::string ip;
+    int port;
+    PacketStats** client_stats = packet_stats[client_index];
+    int found = FALSE;
+    int i = 0;
+
+    while(client_stats[i] != NULL && found == FALSE && i < max_socket_count){
+        if(client_stats[i]->port == port && ip.compare(packet) == 0)
+            found = TRUE;
+        ++i;
+    }
+
+    if(found == FALSE)
+        return -1;                  // Not Found, Indicates Unsuccessful deletion op..
+    
+    --i;
+    delete client_stats[i];
+    client_stats[i] = NULL;
+}
+
 void HandleClientRequest(SOCKET s, struct sockaddr_in address, 
                          char* buffer, int buffer_str_len,
                          PacketStats*** packet_stats, int client_index, int max_socket_count_per_client){
@@ -498,9 +540,9 @@ void HandleClientRequest(SOCKET s, struct sockaddr_in address,
     std::regex del_cmd_pattern("(DEL:)(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])(:[0-9]*)");
 
     if( regex_match(str.begin(), str.end(), add_cmd_pattern) )
-        printf("ADD Matched\n");
+        AddSocket(address, packet_stats, client_index, max_socket_count_per_client);
     else if( regex_match(str.begin(), str.end(), del_cmd_pattern) )
-        printf("DEL Matched\n");
+        DelSocket(address, packet_stats, client_index, max_socket_count_per_client);
     else
         printf("No Match\n");
     
