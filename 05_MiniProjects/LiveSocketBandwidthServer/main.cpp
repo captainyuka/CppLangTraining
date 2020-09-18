@@ -487,27 +487,21 @@ char* CleanMsg(char* msg, int len){
     return msg;
 }
 
-int AddSocket( struct sockaddr_in address, PacketStats*** packet_stats, int client_index, int max_socket_count ){
-    
-    std::string ip;
-    int port;
+/**
+ * Searches whether the current client already listens to the given IP:PORT
+ *
+ * @return i index of the socket inside of the client socket track list.
+ *         -1 if not found.
+ */
+int SearchIfSocketAlreadyExists(std::string ip, int port,
+                                PacketStats*** packet_stats, int client_index,
+                                int max_socket_count){
 
-    PacketStats* stats = new PacketStats(ip, port); 
-    
-    int i = 0;
-    while(packet_stats[client_index][i++] != NULL);
-    --i;
-    packet_stats[client_index][i] = stats;
-}
-
-int DelSocket(std::string ip, int port,
-              PacketStats*** packet_stats, int client_index, int max_socket_count){
-    std::string ip;
-    int port;
     PacketStats** client_stats = packet_stats[client_index];
     int found = FALSE;
     int i = 0;
-
+    
+    // Search if the current socket is already found on the client's list
     while(client_stats[i] != NULL && found == FALSE && i < max_socket_count){
         if(client_stats[i]->port == port && ip.compare(packet) == 0)
             found = TRUE;
@@ -515,9 +509,46 @@ int DelSocket(std::string ip, int port,
     }
 
     if(found == FALSE)
-        return -1;                  // Not Found, Indicates Unsuccessful deletion op..
+        return -1;                  // Not Found
     
-    --i;
+   // While loop increments one additional in the last loop
+   return --i;
+}
+
+int AddSocket(std::string ip, int port, 
+              struct sockaddr_in address, 
+              PacketStats*** packet_stats, int client_index, int max_socket_count ){
+
+    int i = SearchIfSocketAlreadyExists(ip, port, packet_stats, client_index, max_socket_count); 
+    if(i > 0)
+        return -1;          // he Client already listens this socket, discard the request
+
+
+    PacketStats* stats = new PacketStats(ip, port); 
+   
+    packet_stats[client_index][i] = stats;
+}
+
+/**
+ * Deletes a socket from given client's track list.
+ * We no longer listen that port from now on.
+ *
+ * @param ip is the IP of the socket 
+ * @param port is the port of the socket
+ * @param packet_stats is an array of client track lists
+ * @param client_index is the index of the current client inside paket_stats
+ * @param max_socket_count max number of sockets each client could have its track list.
+ */
+int DelSocket(std::string ip, int port,
+              PacketStats*** packet_stats, int client_index, int max_socket_count){
+    std::string ip;
+    int port;
+    PacketStats** client_stats = packet_stats[client_index];
+    int i;
+
+    if( (i = SearchIfSocketAlreadyExists(ip, port, packet_stats, client_index, max_socket_count)) == -1)
+        return -1;                              // Socket is not found
+   
     delete client_stats[i];
     client_stats[i] = NULL;
 }
