@@ -93,22 +93,31 @@ void WsaThrowError(const char* msg);
 void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
 
 
-
 /**
  * A callback function for the async capture which is called each time a packet is captured
+ *
+ * @param packet is the packet that just arrived.
+ * @param dev is the device that we listen to.
+ * @param cookie is a way to pass special parameters to onPacketArrives function.
  */
-static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie)
-{
+static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
+    // We send a PacketStats object as cookie
 	// extract the stats object form the cookie
 	PacketStats* stats = (PacketStats*)cookie;
 
-	// parsed the raw packet
+	// parse the raw packet into more complex Packet
+    // With the help of Packet type we can work on diff. protocol of the packet
 	pcpp::Packet parsedPacket(packet);
 
 	// collect stats from packet
 	stats->consumePacket(parsedPacket);
 }
 
+/**
+ * Prints the device details to the console.
+ *
+ * @param dev is the device to print its details.
+ */
 void PrintDeviceInfo(pcpp::PcapLiveDevice* dev){
 
 	// before capturing packets let's print some info about this interface
@@ -128,14 +137,22 @@ void PrintDeviceInfo(pcpp::PcapLiveDevice* dev){
 		printf("   DNS server:            %s\n", dev->getDnsServers().at(0).toString().c_str());
 }
 
-pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats, std::string interfaceIPAddr){
+/**
+ * Sets up a live capture and start capturing.
+ *
+ * @param stats is the stats of the current device
+ * @param interfaceIPAddr is the IP we are trying to listen
+ * @returns a pointer to the device we are listening.
+ */
+pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats){
     // IPv4 address of the interface we want to sniff
 //	std::string interfaceIPAddr = "185.85.188.58";
-
+    std::string interfaceIPAddr = stats.ip;
+    int port = stats.port;
+        
 	// find the interface by IP address
 	pcpp::PcapLiveDevice* dev = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDeviceByIp(interfaceIPAddr.c_str());
-	if (dev == NULL)
-	{
+	if (dev == NULL){
 		printf("Cannot find interface with IPv4 address of '%s'\n", interfaceIPAddr.c_str());
 		exit(1);
 	}
@@ -145,8 +162,7 @@ pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats, std::string i
     PrintDeviceInfo(dev);
 
     // open the device before start capturing/sending packets
-	if (!dev->open())
-	{
+	if (!dev->open()){
 		printf("Cannot open device\n");
 		exit(1);
 	}
@@ -156,7 +172,9 @@ pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats, std::string i
 
 	printf("\nStarting async capture...\n");
 
-	// start capture in async mode. Give a callback function to call to whenever a packet is captured and the stats object as the cookie
+	// start capture in async mode. 
+    // Give a callback function to call to 
+    // whenever a packet is captured and the stats object as the cookie
 	dev->startCapture(onPacketArrives, &stats);
 
     return dev;
@@ -174,21 +192,17 @@ void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
 	stats.clear();
 }
 
-/*
+
 void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
 	// Using filters
 	// ~~~~~~~~~~~~~
 
-	// create a filter instance to capture only traffic on port 80
-	pcpp::PortFilter portFilter(80, pcpp::SRC_OR_DST);
+	// create a filter instance to capture only traffic on the specified port
+	pcpp::PortFilter portFilter(stats.port, pcpp::SRC_OR_DST);
 
-	// create a filter instance to capture only TCP traffic
-	pcpp::ProtoFilter protocolFilter(pcpp::TCP);
-
-	// create an AND filter to combine both filters - capture only TCP traffic on port 80
-	pcpp::AndFilter andFilter;
+    // create an AND filter to combine multiple filters - capture only traffic on  the specified port
+	pcpp::AndFilter andFilter
 	andFilter.addFilter(&portFilter);
-	andFilter.addFilter(&protocolFilter);
 
 	// set the filter on the device
 	dev->setFilter(andFilter);
@@ -197,22 +211,9 @@ void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
 
 	// start capture in async mode. Give a callback function to call to whenever a packet is captured and the stats object as the cookie
 	dev->startCapture(onPacketArrives, &stats);
-
-	// sleep for 10 seconds in main thread, in the meantime packets are captured in the async thread
-	PCAP_SLEEP(10);
-
-	// stop capturing packets
-	dev->stopCapture();
-
-	// print results - should capture only packets which match the filter (which is TCP port 80)
-	printf("Results:\n");
-	stats.printToConsole();
-
-
-	// close the device before application ends
-	dev->close();
 }
-*/
+
+
 /**
  * main method of the application
  */
