@@ -29,7 +29,7 @@ struct PacketStats
     long int packet_count = 0;       // Number of packets received at last second	
     long int packet_per_second = 0;  // Speed of the socket at last second
 
-	void clear() { 
+	void Clear() { 
         last_second = -1; 
         packet_count = 0;
         packet_per_second = 0; 
@@ -41,13 +41,13 @@ struct PacketStats
 	PacketStats(std::string ip, int port) { 
         this->ip = ip;
         this->port = port;
-        clear(); 
+        Clear(); 
     }
 
 	/**
 	 * Collect stats from a packet, called whenever a packet received.
 	 */
-	void consumePacket(pcpp::Packet& packet){
+	void ConsumePacket(pcpp::Packet& packet){
         // Raw packet contains timestamp of the packet
         pcpp::RawPacket* raw_packet = packet.getRawPacket();
         long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
@@ -85,7 +85,6 @@ void CleanResources(SOCKET master, SOCKET* client_socket);
 void WsaThrowError(const char* msg);
 void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
 
-void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
 void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
 pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats);
 void PrintDeviceInfo(pcpp::PcapLiveDevice* dev);
@@ -199,7 +198,7 @@ static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, 
 	pcpp::Packet parsedPacket(packet);
 
 	// collect stats from packet
-	stats->consumePacket(parsedPacket);
+	stats->ConsumePacket(parsedPacket);
 }
 
 /**
@@ -277,7 +276,7 @@ void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
 	dev->stopCapture();
 
     // clear stats
-	stats.clear();
+	stats.Clear();
 }
 
 
