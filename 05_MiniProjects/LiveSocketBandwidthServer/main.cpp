@@ -447,7 +447,12 @@ char* CleanMsg(char* msg, int len){
 /**
  * Searches whether the current client already listens to the given IP:PORT
  *
- * @return i index of the socket inside of the client socket track list.
+ * @param ip is the IP of the socket 
+ * @param port is the port of the socket
+ * @param packet_stats is an array of client of interest's track lists
+ * @param client_index is the index of the current client inside paket_stats
+ * @param max_socket_count max number of sockets each client could have in his track list.
+  @return i index of the socket inside of the client socket track list.
  *         -1 if not found.
  */
 int SearchIfSocketAlreadyExists(std::string ip, int port,
@@ -478,12 +483,14 @@ int AddSocket(std::string ip, int port,
 
     int i = SearchIfSocketAlreadyExists(ip, port, packet_stats, client_index, max_socket_count); 
     if(i > 0)
-        return -1;          // he Client already listens this socket, discard the request
+        return -1;          // The Client already listens this socket, discard the request
 
 
     PacketStats* stats = new PacketStats(ip, port); 
    
     packet_stats[client_index][i] = stats;
+
+    return 0;
 }
 
 /**
@@ -495,6 +502,7 @@ int AddSocket(std::string ip, int port,
  * @param packet_stats is an array of client track lists
  * @param client_index is the index of the current client inside paket_stats
  * @param max_socket_count max number of sockets each client could have its track list.
+ * @returns -1 in case of error, >= 0 when there exists no error
  */
 int DelSocket(std::string ip, int port,
               PacketStats*** packet_stats, int client_index, int max_socket_count){
@@ -506,9 +514,32 @@ int DelSocket(std::string ip, int port,
    
     delete client_stats[i];
     client_stats[i] = NULL;
+    return 0;
 }
 
-void HandleClientRequest(SOCKET s, struct sockaddr_in address, 
+/**
+ * Callback function for client interactiopn with server.
+ * Provides dynamic command based communication line.
+ *
+ * Supported Commands:
+ *    ADD:IP:PORT:MS      ex/ ADD:185.85.188.58:500
+ *    DEL:IP:PORT:MS      ex/ DEL:185.85.188.58:500
+ *
+ * @param client_socket is the socket of the client to be handled.
+ * @param address is the details of the client socket.
+ * @param buffer is the receive buffer of the server.
+ * @param buffer_str_len is the capacty of the server buffer.
+ * @param packet_stats is an array of PacketStats** array.
+ *        It is used to keep track of client target socket speeds.
+ *        Each client has an array of PacketStats* which is PacketStats**
+ *        and all clients data inside PacketStats***.
+ *        We keep tract of PacketStats as pointer because of performance issues since we
+ *        move these PacketStats every time a packet comes, the performance is critical.
+ *        The performance is critical since we get 100s of Millions packet per second.
+ * @param client_index is the index of the client inside packet_stats array
+ * @param max_socket_count_per_client is the max number of socket a client could listen.
+ */
+void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address, 
                          char* buffer, int buffer_str_len,
                          PacketStats*** packet_stats, int client_index, int max_socket_count_per_client){
     char* CleanMsg(char* msg, int len);
@@ -561,38 +592,39 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket,
      
     void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket, 
                              PacketStats*** packet_stats, int client_index);
-    void HandleClientRequest(SOCKET s, struct sockaddr_in address, 
+    void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address, 
                             char* buffer, int buffer_str_len,
                             PacketStats*** packet_stats, int client_index, int max_socket_count_per_client ); 
-    SOCKET s;
+    SOCKET curr_client_socket;
     int valread;
     struct sockaddr_in address;
     int addrlen = sizeof(struct sockaddr_in);
     int i;
 
     for(i = 0; i < max_number_of_clients; ++i)
-        if(FD_ISSET((s=client_socket[i]), readfds_ptr)){
+        if(FD_ISSET((curr_client_socket=client_socket[i]), readfds_ptr)){
             // Get details of the client
-            getpeername(s, (struct sockaddr*)&address, &addrlen);
+            getpeername(curr_client_socket, (struct sockaddr*)&address, &addrlen);
 
             // Check if it was for closing
             // and also read the incoming msg
             // do not forget, recv doeos not place a null at the end of str
-            valread = recv(s, buffer, max_recv_buffer_size, 0);
+            valread = recv(curr_client_socket, buffer, max_recv_buffer_size, 0);
 
             if(valread == SOCKET_ERROR)
-                DisconnectTheClient(address, s, client_socket, packet_stats, i);
+                DisconnectTheClient(address, curr_client_socket, client_socket, packet_stats, i);
             else if(valread == 0){
                 // Somebody disconnected, print the client's details
                 printf("Host disconnected:::IP = %s, PORT = %d\n", 
                         inet_ntoa(address.sin_addr), 
                         ntohs(address.sin_port) );
                 // Close the socket and mark as 0 in the client list for reuse
-                closesocket(s);
+                closesocket(curr_client_socket);
                 client_socket[i] = 0;
             }else       
                 // client has sent a msg which is now in buffer with length of valread
-                HandleClientRequest(s, address, buffer, valread, packet_stats, i, max_socket_count_per_client ); 
+                HandleClientRequest(curr_client_socket, address, buffer, valread, 
+                                    packet_stats, i, max_socket_count_per_client ); 
         }
 }
 
