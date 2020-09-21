@@ -4,37 +4,30 @@
 #include <regex>
 #include <winsock2.h>
 #include "PcapLiveDeviceList.h"
-#include "PlatformSpecificUtils.h"       // Use cross platform sleep method
-
 
 #pragma comment(lib, "ws2_32.lib")              // Required for windows socket 2 usage(win32 sockets)
 
 #define TRUE 1
 #define FALSE 0
 
-// The following macros planned to be taken as param to main
+// The following macros planned to be taken as argument to the main
 // That is why we allocate the resources dynamically rather than staticly
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
 #define MAX_SOCKET_TO_TRACK_PER_CLIENT 20
 
 /**
- * A struct for collecting packet statistics
+ * A struct for collecting packet statistics on an IP:PORT
  */
 struct PacketStats
 {
     // IP:PORT is the socket we are trying to listen
     std::string ip;                 
     int port;                      
- 
     long int last_second = -1;       // Last second
-    long int packet_count = 0;       // Number of packets received at last second 
-	
+    long int packet_count = 0;       // Number of packets received at last second	
     long int packet_per_second = 0;  // Speed of the socket at last second
 
-    /**
-	 * Clear all stats
-	 */
 	void clear() { 
         last_second = -1; 
         packet_count = 0;
@@ -42,19 +35,18 @@ struct PacketStats
     }
 
 	/**
-	 * Constructor
+	 * a PacketStats object is identified by its IP:PORT
 	 */
 	PacketStats(std::string ip, int port) { 
-        this.ip = ip;
-        this.port = port;
+        this->ip = ip;
+        this->port = port;
         clear(); 
     }
 
 	/**
-	 * Collect stats from a packet
+	 * Collect stats from a packet, called whenever a packet received.
 	 */
-	void consumePacket(pcpp::Packet& packet)
-	{
+	void consumePacket(pcpp::Packet& packet){
         // Raw packet contains timestamp of the packet
         pcpp::RawPacket* raw_packet = packet.getRawPacket();
         long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
@@ -78,7 +70,6 @@ struct PacketStats
 
 };
 
-// Functions related to the Server
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
@@ -87,145 +78,19 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket,
                         char* buffer, int max_number_of_clients, int max_recv_buffer_size,
                         PacketStats*** packet_stats, int max_socket_count_per_client );
 
-// Helper functions for the server
 void CleanResources(SOCKET master, SOCKET* client_socket);
 void WsaThrowError(const char* msg);
 void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
 
+void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
+void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
+pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats);
+void PrintDeviceInfo(pcpp::PcapLiveDevice* dev);
+static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie);
 
-/**
- * A callback function for the async capture which is called each time a packet is captured
- *
- * @param packet is the packet that just arrived.
- * @param dev is the device that we listen to.
- * @param cookie is a way to pass special parameters to onPacketArrives function.
- */
-static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
-    // We send a PacketStats object as cookie
-	// extract the stats object form the cookie
-	PacketStats* stats = (PacketStats*)cookie;
-
-	// parse the raw packet into more complex Packet
-    // With the help of Packet type we can work on diff. protocol of the packet
-	pcpp::Packet parsedPacket(packet);
-
-	// collect stats from packet
-	stats->consumePacket(parsedPacket);
-}
-
-/**
- * Prints the device details to the console.
- *
- * @param dev is the device to print its details.
- */
-void PrintDeviceInfo(pcpp::PcapLiveDevice* dev){
-
-	// before capturing packets let's print some info about this interface
-	printf("Interface info:\n");
-	// get interface name
-	printf("   Interface name:        %s\n", dev->getName());
-	// get interface description
-	printf("   Interface description: %s\n", dev->getDesc());
-	// get interface MAC address
-	printf("   MAC address:           %s\n", dev->getMacAddress().toString().c_str());
-	// get default gateway for interface
-	printf("   Default gateway:       %s\n", dev->getDefaultGateway().toString().c_str());
-	// get interface MTU
-	printf("   Interface MTU:         %d\n", dev->getMtu());
-	// get DNS server if defined for this interface
-	if (dev->getDnsServers().size() > 0)
-		printf("   DNS server:            %s\n", dev->getDnsServers().at(0).toString().c_str());
-}
-
-/**
- * Sets up a live capture and start capturing.
- *
- * @param stats is the stats of the current device
- * @param interfaceIPAddr is the IP we are trying to listen
- * @returns a pointer to the device we are listening.
- */
-pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats){
-    // IPv4 address of the interface we want to sniff
-//	std::string interfaceIPAddr = "185.85.188.58";
-    std::string interfaceIPAddr = stats.ip;
-    int port = stats.port;
-        
-	// find the interface by IP address
-	pcpp::PcapLiveDevice* dev = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDeviceByIp(interfaceIPAddr.c_str());
-	if (dev == NULL){
-		printf("Cannot find interface with IPv4 address of '%s'\n", interfaceIPAddr.c_str());
-		exit(1);
-	}
-
-	// Get device info
-	// ~~~~~~~~~~~~~~~
-    PrintDeviceInfo(dev);
-
-    // open the device before start capturing/sending packets
-	if (!dev->open()){
-		printf("Cannot open device\n");
-		exit(1);
-	}
-
-	// Async packet capture with a callback function
-	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-	printf("\nStarting async capture...\n");
-
-	// start capture in async mode. 
-    // Give a callback function to call to 
-    // whenever a packet is captured and the stats object as the cookie
-	dev->startCapture(onPacketArrives, &stats);
-
-    return dev;
-}
-
-void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
-    // stop capturing packets
-	dev->stopCapture();
-
-	// print results
-	printf("Results:\n");
-	stats.printToConsole();
-
-	// clear stats
-	stats.clear();
-}
-
-
-void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
-	// Using filters
-	// ~~~~~~~~~~~~~
-
-	// create a filter instance to capture only traffic on the specified port
-	pcpp::PortFilter portFilter(stats.port, pcpp::SRC_OR_DST);
-
-    // create an AND filter to combine multiple filters - capture only traffic on  the specified port
-	pcpp::AndFilter andFilter
-	andFilter.addFilter(&portFilter);
-
-	// set the filter on the device
-	dev->setFilter(andFilter);
-
-	printf("\nStarting packet capture with a filter in place...\n");
-
-	// start capture in async mode. Give a callback function to call to whenever a packet is captured and the stats object as the cookie
-	dev->startCapture(onPacketArrives, &stats);
-}
-
-
-/**
- * main method of the application
- */
 int main(int argc, char* argv[])
 {
-    /*pcpp::PcapLiveDevice* dev =*/// SetupAndStartLiveCapture(stats);
-     
-    ///////////////////////////////////////////
-    // Declarations
-    ///////////////////////////////////////////
-
-    WSADATA wsa;                               // Windows Socket A. Data, Required to be initialized to use Windows Sockets
+    WSADATA wsa;                                // Windows Socket A. Data, Required to be initialized to use Windows Sockets
     SOCKET master;                              // Server master's SOCKET
     SOCKET* client_socket;                      // List of client SOCKETs that has connected to the server master
     struct sockaddr_in server;                  // Contains details of the server socket, like IPV4, its port etc.
@@ -303,7 +168,7 @@ int main(int argc, char* argv[])
             // It means there is an incoming connection request
              HandleServerMaster(master, client_socket, msg, MAX_NUMBER_OF_CLIENTS);
         else
-            // Otherwise the ther exists some IO operation on one of the client sockets
+            // Otherwise the there exists some IO operation on one of the client sockets
             // which means one of the clients has sent a request
             HandleServerClient(&readfds, client_socket, buffer, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFFER_SIZE, 
                                stats, max_socket_count_per_client ); 
@@ -314,9 +179,119 @@ int main(int argc, char* argv[])
     return 0;
 }
 
+/**
+ * A callback function for the async capture which is called each time a packet is captured
+ *
+ * @param packet is the packet that just arrived.
+ * @param dev is the device that we listen to.
+ * @param cookie is a way to pass special parameters to onPacketArrives function.
+ */
+static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
+    // We send a PacketStats object as cookie
+	// extract the stats object form the cookie
+	PacketStats* stats = (PacketStats*)cookie;
+
+	// parse the raw packet into more complex Packet
+    // With the help of Packet type we can work on diff. protocol of the packet
+	pcpp::Packet parsedPacket(packet);
+
+	// collect stats from packet
+	stats->consumePacket(parsedPacket);
+}
 
 /**
- * Sets up the server socket return the socket.
+ * Prints the device details to the console.
+ *
+ * @param dev is the device to print its details.
+ */
+void PrintDeviceInfo(pcpp::PcapLiveDevice* dev){
+	printf("Interface info:\n");
+	printf("   Interface name:        %s\n", dev->getName());
+	printf("   Interface description: %s\n", dev->getDesc());
+	printf("   MAC address:           %s\n", dev->getMacAddress().toString().c_str());
+	printf("   Default gateway:       %s\n", dev->getDefaultGateway().toString().c_str());
+	printf("   Interface MTU:         %d\n", dev->getMtu());
+	if (dev->getDnsServers().size() > 0)
+		printf("   DNS server:            %s\n", dev->getDnsServers().at(0).toString().c_str());
+}
+
+/**
+ * Sets up a live capture and start capturing.
+ *
+ * @param stats is the stats of the current device
+ * @param interfaceIPAddr is the IP we are trying to listen
+ * @returns a pointer to the device we are listening.
+ */
+pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats){
+    // IPv4 address of the interface we want to sniff
+//	std::string interfaceIPAddr = "185.85.188.58";
+    std::string interfaceIPAddr = stats.ip;
+    int port = stats.port;
+        
+	// find the interface by IP address
+	pcpp::PcapLiveDevice* dev = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDeviceByIp(interfaceIPAddr.c_str());
+	if (dev == NULL){
+		printf("Cannot find interface with IPv4 address of '%s'\n", interfaceIPAddr.c_str());
+		exit(1);
+	}
+
+	// Get device info
+	// ~~~~~~~~~~~~~~~
+    PrintDeviceInfo(dev);
+
+    // open the device before start capturing/sending packets
+	if (!dev->open()){
+		printf("Cannot open device\n");
+		exit(1);
+	}
+
+	// Async packet capture with a callback function
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	printf("\nStarting async capture...\n");
+
+	// start capture in async mode. 
+    // Give a callback function to call to 
+    // whenever a packet is captured and the stats object as the cookie
+	dev->startCapture(onPacketArrives, &stats);
+
+    return dev;
+}
+
+
+void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
+    // stop capturing packets
+	dev->stopCapture();
+
+    // clear stats
+	stats.clear();
+}
+
+void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
+	// Using filters
+	// ~~~~~~~~~~~~~
+
+	// create a filter instance to capture only traffic on the specified port
+	pcpp::PortFilter portFilter(stats.port, pcpp::SRC_OR_DST);
+
+    // create an AND filter to combine multiple filters - capture only traffic on  the specified port
+	pcpp::AndFilter andFilter;
+	andFilter.addFilter(&portFilter);
+
+	// set the filter on the device
+	dev->setFilter(andFilter);
+
+	printf("\nStarting packet capture with a filter in place...\n");
+
+	// start capture in async mode. 
+    // give a callback function to call to whenever a packet is captured and the stats object as the cookie
+	dev->startCapture(onPacketArrives, &stats);
+}
+
+
+
+/**
+ * Sets up the server and returns the socket.
  * 
  * @param port is the port of the server socket
  * @param server is the details of the server socket
@@ -495,7 +470,7 @@ int SearchIfSocketAlreadyExists(std::string ip, int port,
     
     // Search if the current socket is already found on the client's list
     while(client_stats[i] != NULL && found == FALSE && i < max_socket_count){
-        if(client_stats[i]->port == port && ip.compare(packet) == 0)
+        if(client_stats[i]->port == port && ip.compare(client_stats[i]->ip) == 0)
             found = TRUE;
         ++i;
     }
@@ -533,8 +508,6 @@ int AddSocket(std::string ip, int port,
  */
 int DelSocket(std::string ip, int port,
               PacketStats*** packet_stats, int client_index, int max_socket_count){
-    std::string ip;
-    int port;
     PacketStats** client_stats = packet_stats[client_index];
     int i;
 
