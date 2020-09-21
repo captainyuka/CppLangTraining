@@ -5,7 +5,8 @@
 #include <winsock2.h>
 #include "PcapLiveDeviceList.h"
 
-#pragma comment(lib, "ws2_32.lib")              // Required for windows socket 2 usage(win32 sockets)
+// add -l"ws2_32" arg to g++ or uncomment the next line with gcc
+//#pragma comment(lib, "ws2_32.lib")              // Required for windows socket 2 usage(win32 sockets)
 
 #define TRUE 1
 #define FALSE 0
@@ -50,7 +51,9 @@ struct PacketStats
         // Raw packet contains timestamp of the packet
         pcpp::RawPacket* raw_packet = packet.getRawPacket();
         long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
-        long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
+       
+        // TODO: Convert second based calculation to nano second based using the following variable 
+        //long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
         
         // According to accumulated packets, compute the speed of the socket
         // When the last_second about to change, update the bandwidth of the socket
@@ -86,7 +89,7 @@ void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
 void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
 pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats);
 void PrintDeviceInfo(pcpp::PcapLiveDevice* dev);
-static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie);
+static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie);
 
 int main(int argc, char* argv[])
 {
@@ -180,13 +183,13 @@ int main(int argc, char* argv[])
 }
 
 /**
- * A callback function for the async capture which is called each time a packet is captured
+ * Callback function for the async capture which is called each time a packet is captured
  *
  * @param packet is the packet that just arrived.
  * @param dev is the device that we listen to.
- * @param cookie is a way to pass special parameters to onPacketArrives function.
+ * @param cookie is a way to pass special parameters to OnPacketArrives function.
  */
-static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
+static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
     // We send a PacketStats object as cookie
 	// extract the stats object form the cookie
 	PacketStats* stats = (PacketStats*)cookie;
@@ -223,8 +226,6 @@ void PrintDeviceInfo(pcpp::PcapLiveDevice* dev){
  * @returns a pointer to the device we are listening.
  */
 pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats){
-    // IPv4 address of the interface we want to sniff
-//	std::string interfaceIPAddr = "185.85.188.58";
     std::string interfaceIPAddr = stats.ip;
     int port = stats.port;
         
@@ -248,12 +249,24 @@ pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats){
 	// Async packet capture with a callback function
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-	printf("\nStarting async capture...\n");
+	printf("\nStarting async capture using filters...\n");
 
-	// start capture in async mode. 
+    // create a filter instance to capture only traffic on the specified port
+	pcpp::PortFilter portFilter(port, pcpp::SRC_OR_DST);
+
+    // create an AND filter to combine multiple filters - capture only traffic on  the specified port
+	pcpp::AndFilter andFilter;
+	andFilter.addFilter(&portFilter);
+
+	// set the filter on the device
+	dev->setFilter(andFilter);
+
+	printf("\nStarting async packet capture with a filter in place...\n");
+
+    // start capture in async mode. 
     // Give a callback function to call to 
     // whenever a packet is captured and the stats object as the cookie
-	dev->startCapture(onPacketArrives, &stats);
+	dev->startCapture(OnPacketArrives, &stats);
 
     return dev;
 }
@@ -266,28 +279,6 @@ void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
     // clear stats
 	stats.clear();
 }
-
-void FilterCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats){
-	// Using filters
-	// ~~~~~~~~~~~~~
-
-	// create a filter instance to capture only traffic on the specified port
-	pcpp::PortFilter portFilter(stats.port, pcpp::SRC_OR_DST);
-
-    // create an AND filter to combine multiple filters - capture only traffic on  the specified port
-	pcpp::AndFilter andFilter;
-	andFilter.addFilter(&portFilter);
-
-	// set the filter on the device
-	dev->setFilter(andFilter);
-
-	printf("\nStarting packet capture with a filter in place...\n");
-
-	// start capture in async mode. 
-    // give a callback function to call to whenever a packet is captured and the stats object as the cookie
-	dev->startCapture(onPacketArrives, &stats);
-}
-
 
 
 /**
