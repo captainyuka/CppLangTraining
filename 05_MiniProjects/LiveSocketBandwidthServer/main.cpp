@@ -17,10 +17,11 @@
 #define MAX_RECV_BUFFER_SIZE 1024
 #define MAX_SOCKET_TO_TRACK_PER_CLIENT 20
 
-struct PacketExtra{
+struct PacketExtras{
     PacketStats*** client_stats;
-    int current_client_index;
-
+    SOCKET* client_sockets;
+    int max_number_of_clients;
+    int max_socket_to_track_per_client;
 }
 
 /**
@@ -32,14 +33,9 @@ struct PacketStats
     std::string ip;                 
     int port;                     
     int ms;                     // Listener inform period
-/*
-    long int last_second = -1;       // Last second
-    long int packet_count = 0;       // Number of packets received at last second	
-    long int packet_per_second = 0;  // Speed of the socket at last second
-*/  
     long int last_millisecond = -1;
     long int packet_count = 0;
-    long int packet_per_millisecond = 0;
+    long int packets_per_millisecond = 0;
 
 	void Clear() { 
         last_second = -1; 
@@ -58,48 +54,19 @@ struct PacketStats
     }
 
 	/**
-	 * Collect stats from a packet, called whenever a packet received.
+	 * Count number of packets and also calculate bandwidth at every millisecond.
+     * This function is called whenever a packet received.
+     *
+     * @param raw_packet unprocessed packets with timestamp 
+     * @returns the timestamp of the last packet in milliseconds
 	 */
-    /*
-	void ConsumePacket(pcpp::Packet& packet){
+    long int CountPackets(pcpp::RawPacket* raw_packet){
         // Raw packet contains timestamp of the packet
-        pcpp::RawPacket* raw_packet = packet.getRawPacket();
-        long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
-       
-        // TODO: Convert second based calculation to nano second based using the following variable 
-        // Check every 1ms or 1_000_000 ns
-        //long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
-        
-        // According to accumulated packets, compute the speed of the socket
-        // When the last_second about to change, update the bandwidth of the socket
-        if(packet_timestamp_second != last_second && last_second != -1){
-           last_second = packet_timestamp_second;
-           printf("DEBUG:::Bandwidth: %ld Packets Per Second\n", packet_count);
-           packet_per_second = packet_count;
-           packet_count = 0;
-        }else if(last_second == -1){
-            last_second = packet_timestamp_second;
-            packet_count = 0;
-        }
-
-        // Essential job of this method is the count number of packets
-        ++packet_count;
-	}*/
-
-    void ConsumePacket(pcpp::Packet& packet){
-        // Raw packet contains timestamp of the packet
-        pcpp::RawPacket* raw_packet = packet.getRawPacket();
         long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
         long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
         
         // Work on millisecond units rather than second or nanosecond.
         long int packet_millisecond = packet_timestamp_second * 1000 + packet_timestamp_nsecond  / 1000000;
-
-        // TODO: Convert second based calculation to nano second based using the following variable 
-        // Check every 1ms or 1_000_000 ns
-        long int last_millisecond = -1;
-        long int packet_count = 0;
-        long int packet_per_millisecond = 0;
 
         // According to accumulated packets, compute the speed of the socket
         // When the last_second about to change, update the bandwidth of the socket
@@ -107,27 +74,15 @@ struct PacketStats
         if( (packet_millisecond != this->last_millisecond) && last_millisecond != -1 ){
             this->last_millisecond = packet_millisecond;
             printf("DEBUG:::Bandwidth: %ld Kbps\n", packet_count);
-            this->packet_per_millisecond = packet_count;
+            this->packets_per_millisecond = packet_count;
             this->packet_count = 0;
         }else if(last_millisecond == -1){
             this->last_millisecond = packet_millisecond;
             this->packet_count = 0; 
         }
 
-        // According to accumulated packets, compute the speed of the socket
-        // When the last_second about to change, update the bandwidth of the socket
-        if(packet_timestamp_second != last_second && last_second != -1){
-           last_second = packet_timestamp_second;
-           printf("DEBUG:::Bandwidth: %ld Packets Per Second\n", packet_count);
-           packet_per_second = packet_count;
-           packet_count = 0;
-        }else if(last_second == -1){
-            last_second = packet_timestamp_second;
-            packet_count = 0;
-        }
-
-        // Essential job of this method is the count number of packets
-        ++packet_count;
+        ++(this->packet_count);
+        return packet_millisecond;
 	}
 };
 
@@ -240,27 +195,56 @@ int main(int argc, char* argv[])
 }
 
 /**
- * Callback function for the async capture which is called each time a packet is captured
+ * Control whether we need to send bandwidth data to any of the clients
+ * and also count the number of packets received.
+ *
+ * Callback function for the async capture which is called each time a packet is captured.
  *
  * @param packet is the packet that just arrived.
  * @param dev is the device that we listen to.
  * @param cookie is a way to pass special parameters to OnPacketArrives function.
  */
 static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
-    // We send a PacketStats object as cookie
-	// extract the stats object form the cookie
-	
-    PacketExtra* extra = (PacketExtra*)cookie;
-    PacketStats*** client_stats = extra->client_stats;
-    client_stats
-    //PacketStats* stats = (PacketStats*)cookie;
+    long int timestamp;                                 // Packet timestamp in milliseconds
+    int client, socket;
+    int max_n_clients;
+    int max_n_sockets_per_client;
 
-	// parse the raw packet into more complex Packet
-    // With the help of Packet type we can work on diff. protocol of the packet
-	pcpp::Packet parsedPacket(packet);
+    SOCKET* client_sockets;
+    int client_index;
 
-	// collect stats from packet
-	stats->ConsumePacket(parsedPacket);
+    PacketExtras* extras = (PacketExtras*)cookie;
+    
+    PacketStats*** client_stats = extras->client_stats; // Array of client tract arrs
+    PacketStats** client_track_arr;                     // Array of PacketStats* for a client
+    PacketStats* socket_stats;                          // A socket of the current client
+
+    max_n_clients = extras->max_number_of_clients;
+    max_n_sockets_per_client = extras->max_socket_to_track_per_client;
+    
+    clint_sockets = extras->client_sockets;
+
+	timestamp = stats->CountPackets(packet);
+    
+    for(client = 0; client < max_n_clients; ++client){
+        client_track_arr = client_stats[client];        // Take the next client
+
+        for(socket = 0; 
+            socket < max_n_sockets_per_client && client_track_arr[socket] != NULL; 
+            ++socket){
+
+            if(socket_stats->last_millisecond != -1){
+                socket_stats = client_track_arr[socket];
+                if(  (timestamp - socket_stats->last_millisecond)  >= socket_stats->ms )
+                    InformTheClient(client_sockets[client], )
+                    //inform
+            }
+        }
+    }
+
+    // SOCKET, char*, int  
+    //send(client_socket, buffer, buffer_str_len, 0); 
+
 }
 
 /**
@@ -625,7 +609,8 @@ void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address,
     else
         printf("No Match\n");
     
-    send(s, buffer, buffer_str_len, 0); 
+    // SOCKET, char*, int  
+    send(client_socket, buffer, buffer_str_len, 0); 
 }
 
 /**
