@@ -23,20 +23,23 @@
  */
 struct PacketStats
 {
-    std::string ip;
-    int port;
-
-	int ipv4PacketCount;
-	int tcpPacketCount;
-	int udpPacketCount;
-    
-    long int last_second = -1;
-    long int packet_count = 0; 
+    // IP:PORT is the socket we are trying to listen
+    std::string ip;                 
+    int port;                      
+ 
+    long int last_second = -1;       // Last second
+    long int packet_count = 0;       // Number of packets received at last second 
 	
+    long int packet_per_second = 0;  // Speed of the socket at last second
+
     /**
 	 * Clear all stats
 	 */
-	void clear() { ipv4PacketCount = 0; tcpPacketCount = 0; udpPacketCount = 0; last_second = -1; packet_count = 0;}
+	void clear() { 
+        last_second = -1; 
+        packet_count = 0;
+        packet_per_second = 0; 
+    }
 
 	/**
 	 * Constructor
@@ -52,39 +55,27 @@ struct PacketStats
 	 */
 	void consumePacket(pcpp::Packet& packet)
 	{
-		if (packet.isPacketOfType(pcpp::IPv4))
-			ipv4PacketCount++;
-		if (packet.isPacketOfType(pcpp::TCP))
-			tcpPacketCount++;
-		if (packet.isPacketOfType(pcpp::UDP))
-			udpPacketCount++;
-	   
+        // Raw packet contains timestamp of the packet
         pcpp::RawPacket* raw_packet = packet.getRawPacket();
         long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
         long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
-        //printf("Packet Timestamp-> sec=%ld - nsec=%ld\n", packet_timestamp_second, packet_timestamp_nsecond);
         
+        // According to accumulated packets, compute the speed of the socket
+        // When the last_second about to change, update the bandwidth of the socket
         if(packet_timestamp_second != last_second && last_second != -1){
            last_second = packet_timestamp_second;
-           printf("Bandwidth: %ld pps\n", packet_count);
+           printf("DEBUG:::Bandwidth: %ld Packets Per Second\n", packet_count);
+           packet_per_second = packet_count;
            packet_count = 0;
         }else if(last_second == -1){
             last_second = packet_timestamp_second;
             packet_count = 0;
         }
 
+        // Essential job of this method is the count number of packets
         ++packet_count;
 	}
 
-	/**
-	 * Print stats to console
-	 */
-	void printToConsole()
-	{
-		printf("IPv4 packet count:     %d\n", ipv4PacketCount);
-		printf("TCP packet count:      %d\n", tcpPacketCount);
-		printf("UDP packet count:      %d\n", udpPacketCount);
-	}
 };
 
 // Functions related to the Server
