@@ -17,6 +17,12 @@
 #define MAX_RECV_BUFFER_SIZE 1024
 #define MAX_SOCKET_TO_TRACK_PER_CLIENT 20
 
+struct PacketExtra{
+    PacketStats*** client_stats;
+    int current_client_index;
+
+}
+
 /**
  * A struct for collecting packet statistics on an IP:PORT
  */
@@ -24,10 +30,16 @@ struct PacketStats
 {
     // IP:PORT is the socket we are trying to listen
     std::string ip;                 
-    int port;                      
+    int port;                     
+    int ms;                     // Listener inform period
+/*
     long int last_second = -1;       // Last second
     long int packet_count = 0;       // Number of packets received at last second	
     long int packet_per_second = 0;  // Speed of the socket at last second
+*/  
+    long int last_millisecond = -1;
+    long int packet_count = 0;
+    long int packet_per_millisecond = 0;
 
 	void Clear() { 
         last_second = -1; 
@@ -38,21 +50,24 @@ struct PacketStats
 	/**
 	 * a PacketStats object is identified by its IP:PORT
 	 */
-	PacketStats(std::string ip, int port) { 
+	PacketStats(std::string ip, int port, int ms) { 
         this->ip = ip;
         this->port = port;
+        this->ms = ms;
         Clear(); 
     }
 
 	/**
 	 * Collect stats from a packet, called whenever a packet received.
 	 */
+    /*
 	void ConsumePacket(pcpp::Packet& packet){
         // Raw packet contains timestamp of the packet
         pcpp::RawPacket* raw_packet = packet.getRawPacket();
         long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
        
         // TODO: Convert second based calculation to nano second based using the following variable 
+        // Check every 1ms or 1_000_000 ns
         //long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
         
         // According to accumulated packets, compute the speed of the socket
@@ -69,8 +84,51 @@ struct PacketStats
 
         // Essential job of this method is the count number of packets
         ++packet_count;
-	}
+	}*/
 
+    void ConsumePacket(pcpp::Packet& packet){
+        // Raw packet contains timestamp of the packet
+        pcpp::RawPacket* raw_packet = packet.getRawPacket();
+        long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
+        long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
+        
+        // Work on millisecond units rather than second or nanosecond.
+        long int packet_millisecond = packet_timestamp_second * 1000 + packet_timestamp_nsecond  / 1000000;
+
+        // TODO: Convert second based calculation to nano second based using the following variable 
+        // Check every 1ms or 1_000_000 ns
+        long int last_millisecond = -1;
+        long int packet_count = 0;
+        long int packet_per_millisecond = 0;
+
+        // According to accumulated packets, compute the speed of the socket
+        // When the last_second about to change, update the bandwidth of the socket
+  
+        if( (packet_millisecond != this->last_millisecond) && last_millisecond != -1 ){
+            this->last_millisecond = packet_millisecond;
+            printf("DEBUG:::Bandwidth: %ld Kbps\n", packet_count);
+            this->packet_per_millisecond = packet_count;
+            this->packet_count = 0;
+        }else if(last_millisecond == -1){
+            this->last_millisecond = packet_millisecond;
+            this->packet_count = 0; 
+        }
+
+        // According to accumulated packets, compute the speed of the socket
+        // When the last_second about to change, update the bandwidth of the socket
+        if(packet_timestamp_second != last_second && last_second != -1){
+           last_second = packet_timestamp_second;
+           printf("DEBUG:::Bandwidth: %ld Packets Per Second\n", packet_count);
+           packet_per_second = packet_count;
+           packet_count = 0;
+        }else if(last_second == -1){
+            last_second = packet_timestamp_second;
+            packet_count = 0;
+        }
+
+        // Essential job of this method is the count number of packets
+        ++packet_count;
+	}
 };
 
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
@@ -191,7 +249,11 @@ int main(int argc, char* argv[])
 static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
     // We send a PacketStats object as cookie
 	// extract the stats object form the cookie
-	PacketStats* stats = (PacketStats*)cookie;
+	
+    PacketExtra* extra = (PacketExtra*)cookie;
+    PacketStats*** client_stats = extra->client_stats;
+    client_stats
+    //PacketStats* stats = (PacketStats*)cookie;
 
 	// parse the raw packet into more complex Packet
     // With the help of Packet type we can work on diff. protocol of the packet
