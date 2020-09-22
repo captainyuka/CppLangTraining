@@ -32,12 +32,12 @@ struct PacketStats
     int ms;                     // Listener inform period
     long int last_millisecond = -1;
     long int packet_count = 0;
-    long int packets_per_millisecond = 0;
+    float packets_per_second = 0;
 
 	void Clear() { 
         last_millisecond = -1; 
         packet_count = 0;
-        packets_per_millisecond = 0; 
+        packets_per_second = 0; 
     }
 
 	/**
@@ -49,42 +49,6 @@ struct PacketStats
         this->ms = ms;
         Clear(); 
     }
-
-	/**
-	 * Count number of packets and also calculate bandwidth at every 100millisecond.
-     * This function is called whenever a packet received.
-     *
-     * @param raw_packet unprocessed packets with timestamp 
-     * @returns the timestamp of the last packet in milliseconds
-	 */
-    long int CountPackets(pcpp::RawPacket* raw_packet){
-        // Raw packet contains timestamp of the packet
-        long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec;
-        long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
-        
-        // Work on millisecond units rather than second or nanosecond.
-        long int packet_millisecond = packet_timestamp_second * 1000 + packet_timestamp_nsecond  / 1000000;
-        int diff_ms;
-
-        // According to accumulated packets, compute the speed of the socket
-        // When the last_second about to change, update the bandwidth of the socket
-        
-        if(last_millisecond != -1){
-            diff_ms = packet_millisecond - this->last_millisecond;
-            if(diff_ms > 100){
-                this->last_millisecond = packet_millisecond;
-                //printf("DEBUG:::Bandwidth: %ld Kbps\n", packet_count);
-                this->packets_per_millisecond = packet_count;
-                this->packet_count = 0;
-            }
-        }else{
-             this->last_millisecond = packet_millisecond;
-             this->packet_count = 0;  
-        } 
-
-        ++(this->packet_count);
-        return packet_millisecond;
-	}
 };
 
 struct PacketExtras{
@@ -102,6 +66,44 @@ struct SocketData{
     int port;
     int ms;
 };
+
+/**
+ * Count number of packets and also calculate bandwidth at every 100millisecond.
+ * This function is called whenever a packet received.
+ *
+ * @param raw_packet unprocessed packets with timestamp 
+ */
+void CountPackets(PacketStats* stats, pcpp::RawPacket* raw_packet, PacketExtras* extras){
+    void InformTheClient(SOCKET client_socket,float bandwidth, long int timestamp_in_ms);
+    // Raw packet contains timestamp of the packet
+    long int packet_timestamp_second = raw_packet->getPacketTimeStamp().tv_sec % 1000;  // last 1000 seconds is enough
+    long int packet_timestamp_nsecond = raw_packet->getPacketTimeStamp().tv_nsec; 
+    
+    // Work on millisecond units rather than second or nanosecond.
+    long int packet_millisecond = (packet_timestamp_second * 1000) + (packet_timestamp_nsecond / 1000000);
+    int diff_ms;
+
+    // According to accumulated packets, compute the speed of the socket
+    // When the last_second about to change, update the bandwidth of the socket
+    if(stats->last_millisecond != -1){
+        diff_ms = packet_millisecond - stats->last_millisecond;
+        if( diff_ms >= stats->ms){ 
+            SOCKET* client_sockets = extras->client_sockets;
+            int curr_client_index = extras->curr_client_index;
+            InformTheClient(client_sockets[curr_client_index], 
+                            stats->packets_per_second, packet_millisecond);    
+            stats->last_millisecond = packet_millisecond;
+            stats->packets_per_second = float(stats->packet_count * 1000) / diff_ms;
+            stats->packet_count = 0;
+        }
+    }else{
+         stats->last_millisecond = packet_millisecond;
+         stats->packet_count = 0;  
+    } 
+
+    ++(stats->packet_count);
+
+}
 
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
@@ -183,7 +185,7 @@ int main(int argc, char* argv[])
     // with the help of select()
     ///////////////////////////////////////////
     
-    fprintf(stderr, "DEBUG:::::Waiting for incoming connections");
+    fprintf(stderr, "DEBUG:::::Waiting for incoming connections\n");
 
     // The following while loop first lets the select() function trace all the sockets related to this server.
     // we run the select() with infinite waiting which means up until any notication being generated
@@ -222,18 +224,13 @@ int main(int argc, char* argv[])
     return 0;
 }
 
-
-
-void InformTheClient(SOCKET client_socket, long int bandwidth, long int timestamp_in_ms){
-    // SOCKET, char*, int  
-    //send(client_socket, buffer, buffer_str_len, 0); 
-    
+void InformTheClient(SOCKET client_socket,float bandwidth, long int timestamp_in_ms){
     std::ostringstream out;
-    out << "BANDWIDTH=" << bandwidth << ", TIMESTAMP=" << timestamp_in_ms << '\0';
+    out << "BANDWIDTH=" << bandwidth << ", TIMESTAMP=" << timestamp_in_ms << '\n';
     std::string tmp = out.str();
     const char* buffer =  tmp.c_str();
     int buffer_len = strlen(buffer);
-    printf("INFO::Informing the client... %d kbps...", bandwidth);
+//    printf("INFO::Informing the client... %ld kbps...", bandwidth);
     send(client_socket, buffer, buffer_len, 0);
 }
 
@@ -248,40 +245,13 @@ void InformTheClient(SOCKET client_socket, long int bandwidth, long int timestam
  * @param cookie is a way to pass special parameters to OnPacketArrives function.
  */
 static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
-    void InformTheClient(SOCKET client_socket, long int bandwidth, long int timestamp_in_ms);
-    long int timestamp;                                 // Packet timestamp in milliseconds
-    int client, socket;
-    int max_n_clients;
-    int max_n_sockets_per_client;
-
-    SOCKET* client_sockets;
+    void CountPackets(PacketStats* stats, pcpp::RawPacket* raw_packet, PacketExtras* extras);
     PacketExtras* extras = (PacketExtras*)cookie;
     int client_index = extras->curr_client_index;
     int socket_index = extras->curr_socket_index;
-    max_n_clients = extras->max_number_of_clients;
-    max_n_sockets_per_client = extras->max_socket_to_track_per_client;
-    client_sockets = extras->client_sockets;
 
-    PacketStats*** client_stats = extras->client_stats; // Array of client tract arrs
-    PacketStats** client_track_arr;                     // Array of PacketStats* for a client
-    PacketStats* socket_stats;                          // A socket of the current client
-	timestamp = client_stats[client_index][socket_index]->CountPackets(packet);
-    
-    for(client = 0; client < max_n_clients; ++client){
-        client_track_arr = client_stats[client];        // Take the next client
-        if(client_track_arr == NULL)
-            continue;
-
-        for(socket = 0; 
-            socket < max_n_sockets_per_client && client_track_arr[socket] != NULL; 
-            ++socket){
-            socket_stats = client_track_arr[socket];
-            if(socket_stats->last_millisecond != -1)
-                if(  (timestamp - socket_stats->last_millisecond)  >= socket_stats->ms )
-                    InformTheClient(client_sockets[client], socket_stats->packets_per_millisecond, timestamp);    
-        }
-    }
-
+    PacketStats*** client_stats = extras->client_stats; // Array of client track arrs 
+    CountPackets( client_stats[client_index][socket_index], packet, extras);
 }
 
 /**
@@ -466,7 +436,7 @@ void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, i
     if((new_socket = accept(master, (struct sockaddr*)&address, (int*)&addrlen)) < 0)
         WsaThrowErrorWithCleaningSockets("Select()", client_socket, master);
 
-    printf("New Sconnection:::Socket fd = %d:::IP = %s:::PORT = %d\n",
+    printf("\nNew Sconnection:::Socket fd = %d:::IP = %s:::PORT = %d",
             new_socket,
             inet_ntoa(address.sin_addr),
             ntohs(address.sin_port));
@@ -475,13 +445,13 @@ void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, i
     if(send(new_socket, msg, strlen(msg), 0) != (int)strlen(msg))
         fprintf(stderr, "Msg Sending Failed\n");
     else
-        fprintf(stderr, "DEBUG::::: Msg Has been sent successfully\n");
+        fprintf(stderr, "\nDEBUG::::: Msg Has been sent successfully");
     
     // Add the new socket to the array of sockets
     for(i = 0; i < max_number_of_clients; ++i)
         if(client_socket[i] == 0){
             client_socket[i] = new_socket;
-            fprintf(stderr, "DEBUG:::::Adding socket to the list of sockets at index %d\n", i);
+            fprintf(stderr, "\nDEBUG:::::Adding socket to the list of sockets at index %d", i);
             break;
         } 
 }
@@ -525,10 +495,11 @@ void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_so
         fprintf(stderr, "Host disconnected unexpectedly:::IP = %s:::PORT = %d\n",
                 inet_ntoa(address.sin_addr),
                 ntohs(address.sin_port)); 
-        closesocket(s);
-        DeallocateClientStats(packet_stats, client_index);
-    }else
+   }else
        fprintf(stderr, "recv failed with error code: %d", error_code);
+
+    closesocket(s);
+    DeallocateClientStats(packet_stats, client_index);
 }
 
 
