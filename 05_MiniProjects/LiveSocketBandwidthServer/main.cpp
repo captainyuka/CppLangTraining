@@ -3,10 +3,11 @@
 #include <stdlib.h>
 #include <regex>
 #include <sstream>
+#include <string>
 #include <winsock2.h>
 #include "PcapLiveDeviceList.h"
 
-// add -l"ws2_32" arg to g++ or uncomment the next line with gcc
+// add -l"ws2_32" arg to g++ or uncomment the following line
 //#pragma comment(lib, "ws2_32.lib")              // Required for windows socket 2 usage(win32 sockets)
 
 #define TRUE 1
@@ -14,16 +15,12 @@
 
 // The following macros planned to be taken as argument to the main
 // That is why we allocate the resources dynamically rather than staticly
+// These are only used in main when we declare variables, just replace macro with arg
 #define MAX_NUMBER_OF_CLIENTS 30
 #define MAX_RECV_BUFFER_SIZE 1024
 #define MAX_SOCKET_TO_TRACK_PER_CLIENT 20
+#define MAX_LIVE_DEVICES 50
 
-struct PacketExtras{
-    PacketStats*** client_stats;
-    SOCKET* client_sockets;
-    int max_number_of_clients;
-    int max_socket_to_track_per_client;
-}
 
 /**
  * A struct for collecting packet statistics on an IP:PORT
@@ -74,7 +71,7 @@ struct PacketStats
         // When the last_second about to change, update the bandwidth of the socket
         
         if(last_millisecond != -1){
-            diff_ms = packet_millisecond - this->last_millisecond);
+            diff_ms = packet_millisecond - this->last_millisecond;
             if(diff_ms > 100){
                 this->last_millisecond = packet_millisecond;
                 printf("DEBUG:::Bandwidth: %ld Kbps\n", packet_count);
@@ -91,20 +88,40 @@ struct PacketStats
 	}
 };
 
+struct PacketExtras{
+    PacketStats*** client_stats;
+    SOCKET* client_sockets;
+    int max_number_of_clients;
+    int max_socket_to_track_per_client;
+    int curr_client_index;
+    int curr_socket_index;
+};
+
+//TODO: Integrate into other places where we use ip:port:ms
+struct SocketData{
+    std::string ip;
+    int port;
+    int ms;
+};
+
 SOCKET SetupTheServer(int port, struct sockaddr_in* server, SOCKET* client_socket);
 void StartTheServer(SOCKET master, int max_wait_queue_size, struct sockaddr_in server, SOCKET* client_socket);
 void SetupTheFdSet(SOCKET master, fd_set* readfds_ptr, SOCKET* client_socket);
 void HandleServerMaster(SOCKET master, SOCKET* client_socket, const char* msg, int max_number_of_clients);
-void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, 
+void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_sockets, 
                         char* buffer, int max_number_of_clients, int max_recv_buffer_size,
-                        PacketStats*** packet_stats, int max_socket_count_per_client );
-
+                        PacketStats*** packet_stats,int max_socket_count_per_client,
+                        pcpp::PcapLiveDevice** devices);
+ 
 void CleanResources(SOCKET master, SOCKET* client_socket);
 void WsaThrowError(const char* msg);
 void WsaThrowErrorWithCleaningSockets(const char* msg, SOCKET* client_sockets, SOCKET server);
 
 void StopLiveCapture(pcpp::PcapLiveDevice* dev, PacketStats& stats);
-pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats& stats);
+pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats*** packet_stats, int client_index, 
+                                               int socket_index, SOCKET* client_sockets, 
+                                               int max_number_of_clients,
+                                               int max_socket_to_track_per_client);
 void PrintDeviceInfo(pcpp::PcapLiveDevice* dev);
 static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie);
 
@@ -119,11 +136,13 @@ int main(int argc, char* argv[])
     char* buffer;                               // Server receive buffer, has a max length that has been taken as parameter from cmd
     fd_set readfds;                             // Set of file descriptors
     int i;
+    
 
     // TODO: Take the following variables as argument to main
     int max_number_of_clients = MAX_NUMBER_OF_CLIENTS;
     int max_recv_buffer_size = MAX_RECV_BUFFER_SIZE;
     int max_socket_count_per_client = MAX_SOCKET_TO_TRACK_PER_CLIENT; 
+    int max_live_devices = MAX_LIVE_DEVICES;
 
     // Allocate PacketStats for each client
     PacketStats*** stats = (PacketStats***)malloc(sizeof(PacketStats**) * max_number_of_clients);
@@ -141,7 +160,12 @@ int main(int argc, char* argv[])
     // init all sockets as invalid, later we will put valid ones
     for(i = 0; i < max_number_of_clients; ++i)
         client_socket[i] = 0;
-    
+     
+    // Allocate an array for live devices that we will later listen
+    pcpp::PcapLiveDevice** devices = new pcpp::PcapLiveDevice*[max_live_devices];
+    for(i=0; i < max_live_devices; ++i)
+        devices[i] = NULL;
+
     // Init the WSA
     if(WSAStartup(MAKEWORD(2, 2), &wsa) != 0){
         fprintf(stderr, "Failed to startup the WSA:: WSA Error %d\n", WSAGetLastError());
@@ -191,9 +215,9 @@ int main(int argc, char* argv[])
             // Otherwise the there exists some IO operation on one of the client sockets
             // which means one of the clients has sent a request
             HandleServerClient(&readfds, client_socket, buffer, MAX_NUMBER_OF_CLIENTS, MAX_RECV_BUFFER_SIZE, 
-                               stats, max_socket_count_per_client ); 
+                               stats, max_socket_count_per_client, devices ); 
     }
-   
+
     CleanResources(master, client_socket);                  // Clean up the resources before quiting 
 
     return 0;
@@ -207,7 +231,8 @@ void InformTheClient(SOCKET client_socket, long int bandwidth, long int timestam
     
     std::ostringstream out;
     out << "BANDWIDTH=" << bandwidth << ", TIMESTAMP=" << timestamp_in_ms << '\0';
-    char* buffer =  out.str().c_str();
+    std::string tmp = out.str();
+    const char* buffer =  tmp.c_str();
     int buffer_len = strlen(buffer);
     send(client_socket, buffer, buffer_len, 0);
 }
@@ -223,27 +248,26 @@ void InformTheClient(SOCKET client_socket, long int bandwidth, long int timestam
  * @param cookie is a way to pass special parameters to OnPacketArrives function.
  */
 static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, void* cookie){
+    void InformTheClient(SOCKET client_socket, long int bandwidth, long int timestamp_in_ms);
     long int timestamp;                                 // Packet timestamp in milliseconds
     int client, socket;
     int max_n_clients;
     int max_n_sockets_per_client;
 
     SOCKET* client_sockets;
-    int client_index;
-
     PacketExtras* extras = (PacketExtras*)cookie;
-    
+    int client_index = extras->curr_client_index;
+    int socket_index = extras->curr_socket_index;
+    max_n_clients = extras->max_number_of_clients;
+    max_n_sockets_per_client = extras->max_socket_to_track_per_client;
+    client_sockets = extras->client_sockets;
+
     PacketStats*** client_stats = extras->client_stats; // Array of client tract arrs
     PacketStats** client_track_arr;                     // Array of PacketStats* for a client
     PacketStats* socket_stats;                          // A socket of the current client
-
-    max_n_clients = extras->max_number_of_clients;
-    max_n_sockets_per_client = extras->max_socket_to_track_per_client;
+	timestamp = client_stats[client_index][socket_index]->CountPackets(packet);
     
-    clint_sockets = extras->client_sockets;
 
-	timestamp = stats->CountPackets(packet);
-    
     for(client = 0; client < max_n_clients; ++client){
         client_track_arr = client_stats[client];        // Take the next client
 
@@ -253,7 +277,7 @@ static void OnPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, 
             socket_stats = client_track_arr[socket];
             if(socket_stats->last_millisecond != -1)
                 if(  (timestamp - socket_stats->last_millisecond)  >= socket_stats->ms )
-                    InformTheClient(client_sockets[client], socket_stats->packets_per_millisecond);    
+                    InformTheClient(client_sockets[client], socket_stats->packets_per_millisecond, timestamp);    
         }
     }
 
@@ -282,10 +306,21 @@ void PrintDeviceInfo(pcpp::PcapLiveDevice* dev){
  * @param interfaceIPAddr is the IP we are trying to listen
  * @returns a pointer to the device we are listening.
  */
-pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats*** packet_stats, int client_index, int socket_index){
+pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats*** packet_stats, int client_index, 
+                                               int socket_index, SOCKET* client_sockets, 
+                                               int max_number_of_clients,
+                                               int max_socket_to_track_per_client){
     std::string interfaceIPAddr = packet_stats[client_index][socket_index]->ip;
     int port = packet_stats[client_index][socket_index]->port;
-        
+    
+    PacketExtras* extras = new PacketExtras;
+    extras->client_stats = packet_stats;
+    extras->client_sockets = client_sockets;
+    extras->curr_client_index = client_index;
+    extras->curr_socket_index = socket_index;
+    extras->max_number_of_clients = max_number_of_clients;
+    extras->max_socket_to_track_per_client = max_socket_to_track_per_client;
+
 	// find the interface by IP address
 	pcpp::PcapLiveDevice* dev = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDeviceByIp(interfaceIPAddr.c_str());
 	if (dev == NULL){
@@ -323,7 +358,7 @@ pcpp::PcapLiveDevice* SetupAndStartLiveCapture(PacketStats*** packet_stats, int 
     // start capture in async mode. 
     // Give a callback function to call to 
     // whenever a packet is captured and the stats object as the cookie
-	dev->startCapture(OnPacketArrives, (void*)packet_stats);
+	dev->startCapture(OnPacketArrives, (void*)extras);
 
     return dev;
 }
@@ -527,7 +562,9 @@ int SearchIfSocketAlreadyExists(std::string ip, int port,
 
 int AddSocket(std::string ip, int port, int ms, 
               PacketStats*** packet_stats, int client_index, int max_socket_count,
-              pcpp::PcapLiveDevice** devices ){
+              pcpp::PcapLiveDevice** devices,
+              SOCKET* client_sockets, int max_number_of_clients){
+
     int socket_index = 0;
     int i = SearchIfSocketAlreadyExists(ip, port, packet_stats, client_index, max_socket_count); 
     if(i > 0){
@@ -544,8 +581,10 @@ int AddSocket(std::string ip, int port, int ms,
 
     PacketStats* stats = new PacketStats(ip, port, ms);  
     packet_stats[client_index][i] = stats; 
-    devices[client_index] = SetupAndStartLiveCapture(packet_stats, client_index, socket_index);
-
+    devices[client_index] = SetupAndStartLiveCapture(packet_stats, client_index, 
+                                                     socket_index, client_sockets,
+                                                     max_number_of_clients,
+                                                     max_socket_count);
     return 0;
 }
 
@@ -572,7 +611,32 @@ int DelSocket(std::string ip, int port,
     delete client_stats[i];
     client_stats[i] = NULL;
     devices[i]->stopCapture();       // Stop the device
+    devices[i] = NULL;
     return 0;
+}
+
+SocketData ClientCmdToData(std::string cmd){
+    size_t pos = 0;
+    int i = 0;
+    std::string delimiter = ":";
+    std::string token, ip_str, port_str, ms_str;
+    SocketData data;
+
+    while((pos = cmd.find(delimiter)) != std::string::npos){
+        token = cmd.substr(0, pos);
+        if( i == 1 )
+            ip_str = token;
+        else if( i == 2 )
+            port_str = token;
+        cmd.erase(0, pos + delimiter.length());
+    }
+    ms_str = cmd;
+
+    data.ip = ip_str;
+    data.port = std::stoi( port_str );
+    data.ms = std::stoi( ms_str );
+
+    return data;
 }
 
 /**
@@ -600,10 +664,12 @@ int DelSocket(std::string ip, int port,
 void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address, 
                          char* buffer, int buffer_str_len,
                          PacketStats*** packet_stats, int client_index, int max_socket_count_per_client,
-                         pcpp::PcapLiveDevice** devices
+                         pcpp::PcapLiveDevice** devices,
+                         SOCKET* client_sockets, int max_number_of_clients
                          ){
     char* CleanMsg(char* msg, int len);
-    // Echo back the msg that came in  
+    SocketData ClientCmdToData(std::string cmd);
+    SocketData data;
     buffer[buffer_str_len] = '\0';
     printf("%s:%d - %s\n", inet_ntoa(address.sin_addr),
                            ntohs(address.sin_port),
@@ -616,10 +682,15 @@ void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address,
     std::regex add_cmd_pattern("(ADD:)(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])(:[0-9]*)");
     std::regex del_cmd_pattern("(DEL:)(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])(:[0-9]*)");
 
-    if( regex_match(str.begin(), str.end(), add_cmd_pattern) )
-        AddSocket(address, packet_stats, client_index, max_socket_count_per_client, devices);
-    else if( regex_match(str.begin(), str.end(), del_cmd_pattern) )
-        DelSocket(address, packet_stats, client_index, max_socket_count_per_client, devices);
+    if( regex_match(str.begin(), str.end(), add_cmd_pattern) ){
+        data = ClientCmdToData(str);
+        AddSocket(data.ip, data.port, data.ms, packet_stats, client_index, max_socket_count_per_client, devices,
+                  client_sockets, max_number_of_clients);
+    }
+    else if( regex_match(str.begin(), str.end(), del_cmd_pattern) ){
+        data = ClientCmdToData(str);
+        DelSocket(data.ip, data.port, packet_stats, client_index, max_socket_count_per_client, devices);
+    }
     else
         printf("No Match\n");
     
@@ -647,18 +718,18 @@ void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address,
  *        move these PacketStats every time a packet comes, the performance is critical.
  *
  * */
-void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket, 
+void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_sockets, 
                         char* buffer, int max_number_of_clients, int max_recv_buffer_size,
-                        PacketStats*** packet_stats,int max_socket_count_per_client ){
+                        PacketStats*** packet_stats,int max_socket_count_per_client,
+                        pcpp::PcapLiveDevice** devices){
      
     void DisconnectTheClient(struct sockaddr_in address, SOCKET s, SOCKET* client_socket, 
                              PacketStats*** packet_stats, int client_index);
     void HandleClientRequest(SOCKET client_socket, struct sockaddr_in address, 
                              char* buffer, int buffer_str_len,
                              PacketStats*** packet_stats, int client_index, int max_socket_count_per_client, 
-                             pcpp::PcapLiveDevice** devices
-                            ); 
-    //TODO: devices mainden gelmeli
+                             pcpp::PcapLiveDevice** devices, SOCKET* client_sockets, int max_number_of_clients
+                             ); 
     SOCKET curr_client_socket;
     int valread;
     struct sockaddr_in address;
@@ -666,7 +737,7 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket,
     int i;
 
     for(i = 0; i < max_number_of_clients; ++i)
-        if(FD_ISSET((curr_client_socket=client_socket[i]), readfds_ptr)){
+        if(FD_ISSET((curr_client_socket=client_sockets[i]), readfds_ptr)){
             // Get details of the client
             getpeername(curr_client_socket, (struct sockaddr*)&address, &addrlen);
 
@@ -676,7 +747,7 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket,
             valread = recv(curr_client_socket, buffer, max_recv_buffer_size, 0);
 
             if(valread == SOCKET_ERROR)
-                DisconnectTheClient(address, curr_client_socket, client_socket, packet_stats, i);
+                DisconnectTheClient(address, curr_client_socket, client_sockets, packet_stats, i);
             else if(valread == 0){
                 // Somebody disconnected, print the client's details
                 printf("Host disconnected:::IP = %s, PORT = %d\n", 
@@ -684,11 +755,12 @@ void HandleServerClient(fd_set* readfds_ptr, SOCKET* client_socket,
                         ntohs(address.sin_port) );
                 // Close the socket and mark as 0 in the client list for reuse
                 closesocket(curr_client_socket);
-                client_socket[i] = 0;
+                client_sockets[i] = 0;
             }else       
                 // client has sent a msg which is now in buffer with length of valread
                 HandleClientRequest(curr_client_socket, address, buffer, valread, 
-                                    packet_stats, i, max_socket_count_per_client ); 
+                                    packet_stats, i, max_socket_count_per_client,
+                                    devices, client_sockets, max_number_of_clients); 
         }
 }
 
