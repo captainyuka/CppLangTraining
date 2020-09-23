@@ -85,6 +85,26 @@ PcapPlusPlus configuration is complete. Files created (or modified): mk\platform
 
   * Run `mingw32-make.exe all` from PcapPlusPlus main directory
 
+8- Get into the example>tutorial>livecapture directory of the PcapPlusPlus and copy the server(main.cpp) to this folder.
+
+9- Edit the Makefile.windows and add -l"ws2_32" as follows then rename the file as Makefile without its extension.
+
+`g++.exe $(PCAPPP_BUILD_FLAGS) $(PCAPPP_INCLUDES) -l"w2_32"  -c -o main.o main.cpp`
+
+10- Compile The Server by running `mingw32-make.exe`
+
+11- Run The Server and connect from the client
+
+12- In case use want to use telnet for client
+
+```powershell
+telnet localhost 8888
+
+ADD:185.85.188.58:1923:500
+
+DELL:185.85.188.58:1923:500
+
+```
 
 ## References
 
