@@ -95,14 +95,16 @@ PcapPlusPlus configuration is complete. Files created (or modified): mk\platform
 
 11- Run The Server and connect from the client
 
-12- In case use want to use telnet for client
+12- In case you want to use telnet for client, the following code is an example.
+
+* First add a socket, after that you will be getting data from the server. When all done, delete trace registray by sending del command.
 
 ```powershell
 telnet localhost 8888
 
 ADD:185.85.188.58:1923:500
 
-DELL:185.85.188.58:1923:500
+DEL:185.85.188.58:1923:500
 
 ```
 
